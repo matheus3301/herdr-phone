@@ -37,19 +37,24 @@ function RunHeader({ run, onFocusAgent }: { run: Run; onFocusAgent: () => void }
 
   return (
     <div className="border-b border-seam bg-deck px-2 pt-1">
-      <div className="flex items-center gap-1">
-        <Button variant="quiet" size="icon" aria-label="Back to agents" onClick={() => navigate("/")}>
+      {/* Wraps rather than squeezes. At 200% text zoom the back button, status
+          word, and overflow menu together exceed a 320px row, and a nowrap row
+          collapsed the title to zero width — leaving the run with no visible or
+          measurable heading. The status and the menu drop to a second line
+          instead, so nothing is lost and the status keeps its word. */}
+      <div className="flex flex-wrap items-center gap-1">
+        <Button variant="quiet" size="icon" className="shrink-0" aria-label="Back to agents" onClick={() => navigate("/")}>
           <ChevronLeft className="size-5" />
         </Button>
-        <div className="min-w-0 flex-1">
+        <div className="min-w-[6rem] flex-1">
           <h1 ref={heading} tabIndex={-1} className="truncate text-prose font-semibold text-mist">
             {run.agentName}
           </h1>
         </div>
-        <StatusPill status={run.status} />
+        <StatusPill status={run.status} className="shrink-0" />
         <DropdownMenu>
           <DropdownMenuTrigger asChild>
-            <Button variant="quiet" size="icon" aria-label={`Actions for ${run.agentName}`}>
+            <Button variant="quiet" size="icon" className="shrink-0" aria-label={`Actions for ${run.agentName}`}>
               <Ellipsis className="size-5" />
             </Button>
           </DropdownMenuTrigger>
@@ -281,12 +286,16 @@ function RunDetail({ run, onInvalidated }: { run: Run; onInvalidated: () => void
       <RunHeader run={run} onFocusAgent={() => void runPane("agent.focus", run)} />
 
       <div className="relative min-h-0 flex-1">
+        {/* The scroll container is NOT the live region.
+            `useRunOutput` re-reads on mount and on every explicit refresh,
+            replacing the terminal tail's text nodes — which are additions. A
+            polite region spanning the whole document therefore re-announced up
+            to 40 lines of terminal bytes per refresh, which makes the route
+            unusable with a screen reader on a busy pane. The two regions that
+            genuinely gain entries announce; the tail does not. */}
         <div
           ref={scroller}
           onScroll={onScroll}
-          role="log"
-          aria-live="polite"
-          aria-relevant="additions"
           aria-label={`Activity for ${run.agentName}`}
           className="h-full overflow-y-auto px-4 py-4"
         >
@@ -307,7 +316,13 @@ function RunDetail({ run, onInvalidated }: { run: Run; onInvalidated: () => void
             </section>
 
             {state.instructions.length > 0 && (
-              <section aria-labelledby="instructions-heading" className="flex flex-col gap-2">
+              <section
+                aria-labelledby="instructions-heading"
+                role="log"
+                aria-live="polite"
+                aria-relevant="additions"
+                className="flex flex-col gap-2"
+              >
                 <h2 id="instructions-heading" className="text-body font-semibold text-mist">
                   Your instructions
                 </h2>
@@ -323,7 +338,7 @@ function RunDetail({ run, onInvalidated }: { run: Run; onInvalidated: () => void
               </section>
             )}
 
-            <section aria-labelledby="observed-heading">
+            <section aria-labelledby="observed-heading" role="log" aria-live="polite" aria-relevant="additions">
               <h2 id="observed-heading" className="text-body font-semibold text-mist">
                 Observed activity
               </h2>

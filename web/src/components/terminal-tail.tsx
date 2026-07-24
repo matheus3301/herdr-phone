@@ -53,7 +53,15 @@ export function TerminalTail({
   const lines = output?.lines ?? adapter.outputLines;
 
   return (
-    <section aria-labelledby="recent-output-heading" className="rounded-log bg-hull">
+    <section
+      aria-labelledby="recent-output-heading"
+      // Explicitly silent. Every refresh replaces this whole block's text, which
+      // a polite ancestor would treat as an addition and read out in full — up to
+      // 40 lines of terminal bytes, on every refresh. Declaring `off` here means
+      // the region cannot be re-announced even if an ancestor becomes live later.
+      aria-live="off"
+      className="rounded-log bg-hull"
+    >
       <Collapsible defaultOpen>
         <div className="flex items-center gap-2 px-3 py-2">
           <CollapsibleTrigger className="min-h-11 flex-1">
@@ -101,8 +109,9 @@ export function TerminalTail({
               // The relay may add part types in a future build without bumping
               // the contract version. An unknown part is counted, never guessed at.
               <p className="mt-1 text-meta text-muted-ink">
-                {output.ignoredPartTypes.length} part
-                {output.ignoredPartTypes.length === 1 ? "" : "s"} this app does not understand were not shown.
+                {output.ignoredPartTypes.length === 1
+                  ? "1 part this app does not understand was not shown."
+                  : `${output.ignoredPartTypes.length} parts this app does not understand were not shown.`}
               </p>
             )}
           </div>
