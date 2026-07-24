@@ -62,13 +62,13 @@ export function KeyDock({
 
   const modClass = (state: string) =>
     cn(
-      "font-utility",
+      "tabular",
       state === "locked" && "bg-brass text-onaccent border-brass",
       state === "next" && "border-brass text-brass",
     );
 
   return (
-    <div className="flex flex-col gap-1.5 border-t border-frame bg-bulkhead px-2 py-2 seam">
+    <div className="flex flex-col gap-1.5 border-t border-seam bg-bulkhead px-2 py-2">
       {pasteError && (
         <p className="px-1 text-[12px] text-flare" role="status" aria-live="polite">
           {pasteError}
@@ -105,7 +105,7 @@ export function KeyDock({
           variant="outline"
           size="key"
           aria-label="Send Ctrl+C interrupt"
-          className="font-utility text-flare"
+          className="tabular text-flare"
           onClick={() => onChord("ctrl+c")}
         >
           ^C

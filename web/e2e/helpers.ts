@@ -1,18 +1,74 @@
-import { type Page, expect } from "@playwright/test";
+import { expect, type Page } from "@playwright/test";
 
-/** Pair a device via the fragment handoff and wait for the app shell. Each paired
- * page gets its own in-memory session + CSRF token (mutations need it). When
- * `reset` is true (default) the shared mock herd is reset first for test
- * isolation; pass false to pair a *second* controller without disturbing state. */
+/**
+ * Pair a device via the fragment handoff and wait for the agent inbox.
+ *
+ * Each paired page gets its own in-memory session and CSRF token. When `reset`
+ * is true (the default) the shared mock herd is reset first for isolation; pass
+ * false to pair a *second* controller without disturbing state.
+ */
 export async function pair(page: Page, opts: { reset?: boolean } = {}) {
   if (opts.reset ?? true) await page.request.post("/api/v1/__reset");
   await page.goto("/#pair=dev-pair-secret");
-  await expect(page.getByTestId("terminal-host")).toBeVisible({ timeout: 20_000 });
-  // Fragment must be stripped from the URL (SPEC §9.1).
+  await expect(page.getByRole("heading", { level: 1, name: "Agents" })).toBeVisible({ timeout: 20_000 });
+  // The pairing fragment must never be left in the URL or history.
   await expect.poll(() => page.evaluate(() => window.location.hash)).toBe("");
 }
 
-/** Navigate the bottom/side nav to a primary section. */
-export async function goToSection(page: Page, name: "Terminal" | "Herd" | "Spaces") {
-  await page.getByRole("link", { name }).first().click();
+/** The inbox column. Always mounted; the only column at phone width. */
+export function inbox(page: Page) {
+  return page.locator("aside.shell-inbox");
+}
+
+/** Open a run from the inbox by the agent's name. */
+export async function openRun(page: Page, agentName: string) {
+  await inbox(page).getByRole("link", { name: new RegExp(`\\b${agentName}\\b`) }).first().click();
+  await expect(page.getByRole("heading", { level: 1, name: agentName })).toBeVisible();
+}
+
+/** The "Your instructions" section of an open run. */
+export function instructions(page: Page) {
+  return page.locator("section[aria-labelledby='instructions-heading']");
+}
+
+/** Navigate to a primary destination. */
+export async function goTo(page: Page, name: "Agents" | "Start run" | "Workspaces") {
+  await page.getByRole("navigation", { name: "Primary" }).getByRole("link", { name }).click();
+}
+
+/**
+ * The detail column. At desktop width the inbox is a permanent second column, so
+ * a workspace label can appear both there and in the detail view; scope to the
+ * main region to stay unambiguous at every width.
+ */
+export function main(page: Page) {
+  return page.locator("#main");
+}
+
+/** Open a workspace from the workspace list. */
+export async function openWorkspace(page: Page, label: string) {
+  await main(page).getByRole("link", { name: new RegExp(label) }).first().click();
+  await expect(page.getByRole("heading", { level: 1, name: label })).toBeVisible();
+}
+
+/** Make the next call to `operation` fail once (test-only mock hook). */
+export async function failNext(
+  page: Page,
+  operation: string,
+  body: { status?: number; code?: string; message?: string; retryable?: boolean } = {},
+) {
+  await page.request.post("/api/v1/__fail_next", { data: { operation, ...body } });
+}
+
+/** Recycle a pane the way Herdr does: same id, new lifecycle generation. */
+export async function replacePane(page: Page, paneId: string) {
+  const res = await page.request.post("/api/v1/__replace_pane", { data: { pane_id: paneId } });
+  return (await res.json()) as { pane_id: string; generation: number };
+}
+
+/** Persist a theme before the app boots (the prefs store reads it on load). */
+export async function presetTheme(page: Page, theme: "light" | "dark") {
+  await page.addInitScript((t) => {
+    localStorage.setItem("herdr-phone.prefs", JSON.stringify({ theme: t, terminalFontSize: 13 }));
+  }, theme);
 }

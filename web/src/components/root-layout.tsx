@@ -1,55 +1,52 @@
 import { Outlet, useLocation } from "react-router-dom";
-import { AppHeader } from "@/components/app-header";
-import { BottomNav } from "@/components/bottom-nav";
-import { TopologyRibbon } from "@/components/topology-ribbon";
+import { AppBar } from "@/components/app-bar";
+import { PrimaryNav } from "@/components/primary-nav";
 import { ConnectionBanner } from "@/components/connection-banner";
-import { useIsWide } from "@/hooks/use-media-query";
+import { RunInbox } from "@/components/run-inbox";
+import { useRuns } from "@/hooks/use-runs";
 import { useVisualViewport } from "@/hooks/use-visual-viewport";
 import { keyboardOpen } from "@/lib/keyboard-layout";
+import { attentionCount } from "@/lib/run";
 
 /**
- * App shell (SPEC §14.3). Narrow: header + topology ribbon + content + bottom
- * nav. Wide (>=768px): the ribbon becomes a left rail with the same content and
- * control shelf — one product, not a separate desktop app.
+ * The app shell.
+ *
+ * The inbox and the detail column are both mounted for the whole session and
+ * placed by CSS grid: stacked in one cell on a phone (one shown at a time),
+ * side by side at desktop width. Nothing remounts when the viewport crosses the
+ * breakpoint, so a live run — or an attached console — survives a rotation or a
+ * window resize.
  */
 export function RootLayout() {
-  const wide = useIsWide();
-  const vp = useVisualViewport();
   const location = useLocation();
-  const onTerminal = location.pathname === "/" || location.pathname === "/terminal";
-  const kbOpen = keyboardOpen(vp);
+  const runs = useRuns();
+  const vp = useVisualViewport();
 
-  if (wide) {
-    return (
-      <div className="grid h-dvh grid-cols-[300px_1fr] overflow-hidden bg-deck">
-        <aside className="flex min-h-0 flex-col border-r border-frame bg-deck">
-          <AppHeader compact />
-          <div className="min-h-0 flex-1 overflow-y-auto">
-            <TopologyRibbon orientation="vertical" />
-          </div>
-          <BottomNav orientation="vertical" />
-        </aside>
-        <div className="flex min-h-0 min-w-0 flex-col">
-          <ConnectionBanner />
-          <main className="min-h-0 min-w-0 flex-1 overflow-hidden">
-            <Outlet />
-          </main>
-        </div>
-      </div>
-    );
-  }
+  // Everything except the inbox itself is a "detail" surface.
+  const detail = location.pathname !== "/";
+  const attention = attentionCount(runs);
+  // While the software keyboard is up, the composer owns the space above it.
+  const hideNav = keyboardOpen(vp);
 
   return (
-    <div className="flex h-dvh flex-col overflow-hidden bg-deck">
-      <AppHeader />
-      <TopologyRibbon />
-      <ConnectionBanner />
-      <main className="min-h-0 flex-1 overflow-hidden">
+    <div className="app-shell bg-deck" data-detail={detail}>
+      <a className="skip-link" href="#main">
+        Skip to content
+      </a>
+      <AppBar attention={attention} />
+      <div className="shell-banner">
+        <ConnectionBanner />
+      </div>
+
+      <aside className="shell-inbox flex flex-col" aria-label="Agent runs">
+        <RunInbox />
+      </aside>
+
+      <main id="main" className="shell-main flex flex-col">
         <Outlet />
       </main>
-      {/* Hide the bottom nav while the keyboard is up on the terminal so the
-          control shelf owns the space above the keyboard (SPEC §14.4). */}
-      {!(onTerminal && kbOpen) && <BottomNav />}
+
+      {!hideNav && <PrimaryNav attention={attention} />}
     </div>
   );
 }

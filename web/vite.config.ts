@@ -16,7 +16,11 @@ import { mockRelay } from "./mock/relay";
 // browser bundle, so production builds have zero mock code. Playwright drives the
 // preview server, which the mock relay backs with a deterministic in-memory herd.
 export default defineConfig(({ mode }) => ({
-  base: "./",
+  // Absolute asset base. Client routes are now nested (/runs/:id, /console/:pane),
+  // so a relative base would resolve ./assets/* against the route's directory and
+  // 404 on a deep link or a hard reload. The relay serves the shell from the
+  // origin root, so "/" is correct in both production and preview.
+  base: "/",
   define: {
     __APP_VERSION__: JSON.stringify("0.1.0"),
   },

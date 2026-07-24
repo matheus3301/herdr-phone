@@ -2,35 +2,33 @@ import { describe, it, expect } from "vitest";
 import { readFileSync } from "node:fs";
 import { resolve } from "node:path";
 
-// Read the stylesheet source directly (single source of truth for token values).
-// The worker cwd may be the web/ root or the repo root, so try both.
+/**
+ * Theme contrast guard.
+ *
+ * Parses the real token values out of src/index.css for both the dark (@theme)
+ * and light (.light) palettes and asserts WCAG contrast for the pairings that
+ * actually ship, so a future token edit that breaks readability fails here
+ * rather than in a screenshot review.
+ */
 function readCss(): string {
-  for (const p of ["src/index.css", "web/src/index.css"]) {
+  // The worker cwd may be web/ or the repo root.
+  for (const candidate of ["src/index.css", "web/src/index.css"]) {
     try {
-      const c = readFileSync(resolve(process.cwd(), p), "utf8");
-      if (c.includes("@theme")) return c;
+      const css = readFileSync(resolve(process.cwd(), candidate), "utf8");
+      if (css.includes("@theme")) return css;
     } catch {
-      /* try next candidate */
+      /* try the next candidate */
     }
   }
   throw new Error(`could not locate src/index.css from ${process.cwd()}`);
 }
 const css = readCss();
 
-/**
- * Theme contrast guard. Parses the real token values from src/index.css for both
- * the dark (@theme) and light (.light) palettes and asserts WCAG contrast for the
- * pairs that actually appear in the UI, so a future token edit that breaks
- * readability (the mixed-theme bug this fixes) fails CI.
- */
-
 function block(name: string): string {
-  // Anchor on the selector's own opening brace so a mention of the selector
-  // elsewhere (e.g. ".light" inside @custom-variant) is not matched.
   const re = new RegExp(name.replace(/[.*+?^${}()|[\]\\]/g, "\\$&") + "\\s*\\{");
-  const m = re.exec(css);
-  if (!m) throw new Error(`missing block ${name}`);
-  const open = css.indexOf("{", m.index);
+  const match = re.exec(css);
+  if (!match) throw new Error(`missing block ${name}`);
+  const open = css.indexOf("{", match.index);
   const close = css.indexOf("}", open);
   return css.slice(open + 1, close);
 }
@@ -52,10 +50,11 @@ function srgbToLin(c: number): number {
 }
 function luminance(hex: string): number {
   const h = hex.replace("#", "");
-  const r = parseInt(h.slice(0, 2), 16);
-  const g = parseInt(h.slice(2, 4), 16);
-  const b = parseInt(h.slice(4, 6), 16);
-  return 0.2126 * srgbToLin(r) + 0.7152 * srgbToLin(g) + 0.0722 * srgbToLin(b);
+  return (
+    0.2126 * srgbToLin(parseInt(h.slice(0, 2), 16)) +
+    0.7152 * srgbToLin(parseInt(h.slice(2, 4), 16)) +
+    0.0722 * srgbToLin(parseInt(h.slice(4, 6), 16))
+  );
 }
 function contrast(fg: string, bg: string): number {
   const a = luminance(fg);
@@ -64,58 +63,94 @@ function contrast(fg: string, bg: string): number {
   return (hi + 0.05) / (lo + 0.05);
 }
 
+const REQUIRED = [
+  "deck",
+  "bulkhead",
+  "hull",
+  "seam",
+  "frame",
+  "mist",
+  "muted-ink",
+  "faint-ink",
+  "brass",
+  "tide",
+  "flare",
+  "onaccent",
+  "runline",
+  "terminal",
+  "terminal-ink",
+];
+
 describe.each([
   ["dark", dark],
   ["light", light],
-])("theme contrast — %s", (_name, p) => {
-  it("has all named tokens defined", () => {
-    for (const k of ["deck", "bulkhead", "hull", "mist", "muted-ink", "brass", "tide", "flare", "onaccent", "frame", "terminal"]) {
-      expect(p[k], `missing --color-${k}`).toBeTruthy();
+])("Dispatch Log contrast — %s", (_name, palette) => {
+  it("defines every semantic token", () => {
+    for (const token of REQUIRED) expect(palette[token], `missing --color-${token}`).toBeTruthy();
+  });
+
+  it("keeps the console surface dark in both themes", () => {
+    // xterm's foreground is a fixed pale value; a pale console surface would
+    // make it unreadable, so --color-terminal is intentionally not themed.
+    expect(luminance(palette.terminal)).toBeLessThan(0.1);
+    expect(contrast(palette["terminal-ink"], palette.terminal)).toBeGreaterThanOrEqual(4.5);
+  });
+
+  it("primary text is AA-readable on every surface", () => {
+    for (const surface of [palette.deck, palette.bulkhead, palette.hull]) {
+      expect(contrast(palette.mist, surface)).toBeGreaterThanOrEqual(4.5);
     }
   });
 
-  it("keeps the terminal surface dark in both themes (xterm foreground is pale)", () => {
-    expect(luminance(p.terminal)).toBeLessThan(0.1);
-    // xterm's fixed pale foreground (#dce7e4) must stay readable on it.
-    expect(contrast("#dce7e4", p.terminal)).toBeGreaterThanOrEqual(4.5);
-  });
-
-  it("primary text (Mist) is AA-readable on every surface", () => {
-    expect(contrast(p.mist, p.deck)).toBeGreaterThanOrEqual(4.5);
-    expect(contrast(p.mist, p.bulkhead)).toBeGreaterThanOrEqual(4.5);
-    expect(contrast(p.mist, p.hull)).toBeGreaterThanOrEqual(4.5);
-  });
-
-  it("secondary ink (muted) is readable on the base surface", () => {
-    expect(contrast(p["muted-ink"], p.deck)).toBeGreaterThanOrEqual(4.0);
-    expect(contrast(p["muted-ink"], p.hull)).toBeGreaterThanOrEqual(4.0);
-  });
-
-  it("solid accent buttons: on-accent ink is AA-readable on Brass/Tide/Flare", () => {
-    expect(contrast(p.onaccent, p.brass)).toBeGreaterThanOrEqual(4.0);
-    expect(contrast(p.onaccent, p.tide)).toBeGreaterThanOrEqual(4.0);
-    expect(contrast(p.onaccent, p.flare)).toBeGreaterThanOrEqual(4.0);
-  });
-
-  it("accent text (Brass/Tide/Flare) has accessible contrast on surfaces", () => {
-    for (const surface of [p.deck, p.bulkhead, p.hull]) {
-      expect(contrast(p.brass, surface)).toBeGreaterThanOrEqual(3.0);
-      expect(contrast(p.tide, surface)).toBeGreaterThanOrEqual(3.0);
-      expect(contrast(p.flare, surface)).toBeGreaterThanOrEqual(3.0);
+  it("secondary text is AA-readable on every surface", () => {
+    for (const surface of [palette.deck, palette.bulkhead, palette.hull]) {
+      expect(contrast(palette["muted-ink"], surface)).toBeGreaterThanOrEqual(4.5);
     }
+  });
+
+  it("tertiary text (ids, timestamps) clears large-text AA on every surface", () => {
+    for (const surface of [palette.deck, palette.bulkhead, palette.hull]) {
+      expect(contrast(palette["faint-ink"], surface)).toBeGreaterThanOrEqual(3.5);
+    }
+  });
+
+  it("solid accent buttons keep readable ink", () => {
+    for (const accent of [palette.brass, palette.tide, palette.flare]) {
+      expect(contrast(palette.onaccent, accent)).toBeGreaterThanOrEqual(4.0);
+    }
+  });
+
+  it("status text carries meaning on its own, so it must be readable as text", () => {
+    for (const surface of [palette.deck, palette.bulkhead, palette.hull]) {
+      expect(contrast(palette.brass, surface)).toBeGreaterThanOrEqual(4.0);
+      expect(contrast(palette.tide, surface)).toBeGreaterThanOrEqual(4.0);
+      expect(contrast(palette.flare, surface)).toBeGreaterThanOrEqual(4.0);
+    }
+  });
+
+  it("the runline rail is visible against the app background without shouting", () => {
+    const ratio = contrast(palette.runline, palette.deck);
+    expect(ratio).toBeGreaterThanOrEqual(1.4);
+    expect(ratio).toBeLessThan(7);
+  });
+
+  it("separators are visible but quieter than deliberate borders", () => {
+    expect(contrast(palette.seam, palette.deck)).toBeGreaterThan(1.05);
+    expect(contrast(palette.frame, palette.deck)).toBeGreaterThan(contrast(palette.seam, palette.deck));
   });
 });
 
-describe("themes are actually distinct (not mixed)", () => {
-  it("surfaces flip pale and ink flips dark under .light", () => {
-    // Deck: dark surface in dark mode, pale surface in light mode.
+describe("the two themes are genuinely distinct", () => {
+  it("flips surfaces pale and ink dark, preserving depth order", () => {
     expect(luminance(dark.deck)).toBeLessThan(0.1);
     expect(luminance(light.deck)).toBeGreaterThan(0.6);
-    // Mist ink: pale in dark mode, dark in light mode.
     expect(luminance(dark.mist)).toBeGreaterThan(0.6);
     expect(luminance(light.mist)).toBeLessThan(0.1);
-    // The raised surface stays lighter than the base in both themes (depth cue).
+    // A raised surface stays lighter than the base in both themes.
     expect(luminance(dark.bulkhead)).toBeGreaterThan(luminance(dark.deck));
     expect(luminance(light.bulkhead)).toBeGreaterThan(luminance(light.deck));
+    // A well stays darker than the base in both themes.
+    expect(luminance(dark.hull)).toBeLessThan(luminance(dark.deck));
+    expect(luminance(light.hull)).toBeLessThan(luminance(light.deck));
   });
 });

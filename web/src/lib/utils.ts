@@ -1,5 +1,24 @@
 import { clsx, type ClassValue } from "clsx";
-import { twMerge } from "tailwind-merge";
+import { extendTailwindMerge } from "tailwind-merge";
+
+/**
+ * The design system defines custom `text-*` names for BOTH the type scale
+ * (`text-prose`, `text-body`, `text-meta`) and the palette (`text-mist`,
+ * `text-onaccent`, …). tailwind-merge cannot tell them apart on its own: every
+ * unknown `text-<word>` falls into its colour group, so `text-body text-onaccent`
+ * looked like two colours and the second silently deleted the first.
+ *
+ * That is not a cosmetic detail — it is how a solid brass button lost its dark
+ * ink and rendered pale-on-pale. Declaring the type scale as font sizes keeps the
+ * two groups separate, so a size and a colour can coexist on one element.
+ */
+const twMerge = extendTailwindMerge({
+  extend: {
+    classGroups: {
+      "font-size": [{ text: ["prose", "body", "meta"] }],
+    },
+  },
+});
 
 /** Tailwind-aware className combiner used by every UI primitive. */
 export function cn(...inputs: ClassValue[]): string {

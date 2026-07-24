@@ -119,7 +119,7 @@ describe("TerminalSocket", () => {
     expect(JSON.parse(FakeWS.instances[0].textFrames().at(-1)!)).toEqual({ type: "release" });
   });
 
-  it("reconnects with a fresh, non-takeover controller after an unexpected close", () => {
+  it("reconnects with a fresh, non-takeover controller but keeps the generation", () => {
     vi.useFakeTimers();
     try {
       const h = handlers();
@@ -129,9 +129,30 @@ describe("TerminalSocket", () => {
       FakeWS.instances[0].close(); // unexpected drop
       vi.advanceTimersByTime(2000);
       expect(FakeWS.instances.length).toBe(2);
-      // The reconnect drops takeover intent and the single-use nonce.
+      // The reconnect drops takeover intent and the single-use nonce…
       expect(FakeWS.instances[1].url).not.toContain("takeover=1");
       expect(FakeWS.instances[1].url).not.toContain("confirmation=");
+      // …but attach is generation-checked and the assertion is mandatory, so
+      // dropping it would make every reconnect fail (or, worse, be ambiguous
+      // about which pane incarnation it landed on).
+      expect(FakeWS.instances[1].url).toContain("expected_generation=2");
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("keeps the generation across repeated reconnects", () => {
+    vi.useFakeTimers();
+    try {
+      const s = new TerminalSocket("w1:p1", 80, 24, handlers());
+      s.connect({ expectedGeneration: 7 });
+      for (let attempt = 0; attempt < 3; attempt++) {
+        FakeWS.instances.at(-1)!.open();
+        FakeWS.instances.at(-1)!.close();
+        vi.advanceTimersByTime(10_000);
+      }
+      expect(FakeWS.instances.length).toBe(4);
+      for (const ws of FakeWS.instances) expect(ws.url).toContain("expected_generation=7");
     } finally {
       vi.useRealTimers();
     }

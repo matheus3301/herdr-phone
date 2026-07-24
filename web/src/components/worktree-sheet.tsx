@@ -55,7 +55,7 @@ export function WorktreeSheet({ trigger }: { trigger: ReactNode }) {
         <div className="flex flex-col gap-2">
           {worktrees.length === 0 && !creating && <p className="py-2 text-sm text-muted-ink">No worktrees yet.</p>}
           {worktrees.map((wt) => (
-            <div key={wt.path} className="flex items-center gap-2 rounded-[10px] border border-frame bg-hull p-2 pr-1.5">
+            <div key={wt.path} className="flex items-center gap-2 rounded-[10px] border border-seam bg-hull p-2 pr-1.5">
               <GitBranch className="size-4 shrink-0 text-muted-ink" />
               <div className="min-w-0 flex-1">
                 <div className="flex items-center gap-2">
@@ -63,7 +63,7 @@ export function WorktreeSheet({ trigger }: { trigger: ReactNode }) {
                   {wt.isDetached && <Badge tone="brass">detached</Badge>}
                   {wt.isPrunable && <Badge tone="flare">prunable</Badge>}
                 </div>
-                <span className="block truncate font-utility text-[11px] text-muted-ink" title={wt.path}>
+                <span className="block truncate tabular text-muted-ink" title={wt.path}>
                   {shortPath(wt.path, 3)}
                 </span>
               </div>
@@ -98,7 +98,7 @@ export function WorktreeSheet({ trigger }: { trigger: ReactNode }) {
         </div>
 
         {creating ? (
-          <div className="mt-1 flex flex-col gap-3 rounded-[10px] border border-frame bg-hull p-3">
+          <div className="mt-1 flex flex-col gap-3 rounded-[10px] border border-seam bg-hull p-3">
             <div className="flex flex-col gap-1.5">
               <Label htmlFor="wt-branch">Branch</Label>
               <Input id="wt-branch" value={branch} onChange={(e) => setBranch(e.target.value)} placeholder="feature/x" autoComplete="off" />

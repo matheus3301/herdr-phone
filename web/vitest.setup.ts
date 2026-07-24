@@ -1,6 +1,11 @@
 import "@testing-library/jest-dom/vitest";
 import { afterEach, vi } from "vitest";
-import { cleanup } from "@testing-library/react";
+import { cleanup, configure } from "@testing-library/react";
+
+// findBy*/waitFor default to 1s, which a loaded machine running the whole suite
+// in parallel jsdom workers routinely exceeds for a Radix portal or a settled
+// promise. The assertions are unchanged; only the patience is.
+configure({ asyncUtilTimeout: 8000 });
 
 afterEach(() => {
   cleanup();

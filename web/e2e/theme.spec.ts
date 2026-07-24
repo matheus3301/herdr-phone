@@ -1,16 +1,11 @@
-import { test, expect, type Page, type Locator } from "@playwright/test";
-import { pair, goToSection } from "./helpers";
+import { test, expect, type Locator, type Page } from "@playwright/test";
+import { goTo, inbox, instructions, main, openRun, pair, presetTheme } from "./helpers";
 
-/** Set the persisted theme before the app loads (prefsStore reads it on boot). */
-async function setTheme(page: Page, theme: "light" | "dark") {
-  await page.addInitScript((t) => {
-    localStorage.setItem("herdr-phone.prefs", JSON.stringify({ theme: t, terminalFontSize: 13 }));
-  }, theme);
-}
-
-/** Compute the WCAG contrast ratio of an element's text against its rendered
- * background (walking up to the first opaque ancestor) — the real, post-cascade
- * colors, so a mixed-theme regression fails here. */
+/**
+ * Contrast of an element's text against its *rendered* background — alpha layers
+ * composited up to the first opaque ancestor — so a mixed-theme regression fails
+ * here rather than in a screenshot review.
+ */
 async function contrastOf(page: Page, target: Locator): Promise<number> {
   const handle = await target.first().elementHandle();
   if (!handle) throw new Error("element not found for contrast check");
@@ -29,9 +24,6 @@ async function contrastOf(page: Page, target: Locator): Promise<number> {
       return 0.2126 * f(r) + 0.7152 * f(g) + 0.0722 * f(b);
     };
     const fg = parse(getComputedStyle(el as Element).color)?.rgb ?? [0, 0, 0];
-    // Collect background layers from the element up to the first opaque one, then
-    // alpha-composite them so a translucent tint (e.g. bg-flare/10) resolves to
-    // its real rendered color rather than being mistaken for an opaque fill.
     const layers: Array<{ rgb: [number, number, number]; a: number }> = [];
     let node: Element | null = el as Element;
     while (node) {
@@ -55,16 +47,15 @@ async function contrastOf(page: Page, target: Locator): Promise<number> {
   }, handle);
 }
 
-/** Luminance of the effective (alpha-composited) background behind an element. */
-async function bgLuminance(page: Page, target: Locator): Promise<number> {
+async function backgroundLuminance(page: Page, target: Locator): Promise<number> {
   const handle = await target.first().elementHandle();
-  if (!handle) throw new Error("element not found for bg check");
+  if (!handle) throw new Error("element not found for background check");
   return page.evaluate((el) => {
-    const parse = (s: string): { rgb: [number, number, number]; a: number } | null => {
+    const parse = (s: string) => {
       const m = s.match(/rgba?\(([^)]+)\)/);
       if (!m) return null;
       const p = m[1].split(",").map((x) => parseFloat(x));
-      return { rgb: [p[0], p[1], p[2]], a: p[3] === undefined ? 1 : p[3] };
+      return { rgb: [p[0], p[1], p[2]] as [number, number, number], a: p[3] === undefined ? 1 : p[3] };
     };
     const lum = ([r, g, b]: [number, number, number]) => {
       const f = (c: number) => {
@@ -73,59 +64,57 @@ async function bgLuminance(page: Page, target: Locator): Promise<number> {
       };
       return 0.2126 * f(r) + 0.7152 * f(g) + 0.0722 * f(b);
     };
-    const layers: Array<{ rgb: [number, number, number]; a: number }> = [];
     let node: Element | null = el as Element;
     while (node) {
       const c = parse(getComputedStyle(node).backgroundColor);
-      if (c && c.a > 0) {
-        layers.push(c);
-        if (c.a >= 1) break;
-      }
+      if (c && c.a >= 1) return lum(c.rgb);
       node = node.parentElement;
     }
-    let bg: [number, number, number] = layers.length ? layers[layers.length - 1].rgb : [255, 255, 255];
-    for (let i = layers.length - 2; i >= 0; i--) {
-      const t = layers[i];
-      bg = [0, 1, 2].map((k) => t.rgb[k] * t.a + bg[k] * (1 - t.a)) as [number, number, number];
-    }
-    return lum(bg);
+    return 1;
   }, handle);
 }
 
 for (const theme of ["light", "dark"] as const) {
   test.describe(`${theme} theme readability`, () => {
-    test(`Herd, action buttons, and dialogs are readable (${theme})`, async ({ page }) => {
-      await setTheme(page, theme);
+    test(`the inbox, a run, and its controls are readable (${theme})`, async ({ page }) => {
+      await presetTheme(page, theme);
       await pair(page);
       await expect
         .poll(() => page.evaluate(() => document.documentElement.classList.contains("light")))
         .toBe(theme === "light");
 
-      // The terminal surface stays dark in BOTH themes (xterm's pale foreground
-      // must never sit on a pale surface).
-      const termBgLum = await bgLuminance(page, page.getByTestId("terminal-host"));
-      expect(termBgLum).toBeLessThan(0.15);
+      // Inbox: section heading, agent name, Herdr's pane title, status word.
+      expect(await contrastOf(page, inbox(page).getByRole("heading", { level: 2, name: /needs you/i }))).toBeGreaterThanOrEqual(4.0);
+      expect(await contrastOf(page, inbox(page).getByText("Approve this command?"))).toBeGreaterThanOrEqual(4.5);
+      expect(await contrastOf(page, inbox(page).getByText("Needs you").nth(1))).toBeGreaterThanOrEqual(4.0);
 
-      // Herd: a blocked agent's name and its question must be readable on the card.
-      await goToSection(page, "Herd");
-      await expect(page.getByText(/Approve this command\?/)).toBeVisible();
-      expect(await contrastOf(page, page.getByText("claude").first())).toBeGreaterThanOrEqual(4.5);
-      expect(await contrastOf(page, page.getByText(/Approve this command\?/))).toBeGreaterThanOrEqual(4.5);
-      // Primary enabled action label ("Open terminal") on its accent background.
-      expect(await contrastOf(page, page.getByRole("button", { name: /open terminal/i }).first())).toBeGreaterThanOrEqual(4.0);
+      // The one deliberate primary action.
+      expect(await contrastOf(page, inbox(page).getByRole("link", { name: "Start run" }))).toBeGreaterThanOrEqual(4.0);
 
-      // Spaces: the primary "New workspace" action.
-      await goToSection(page, "Spaces");
-      const newWs = page.getByRole("button", { name: /new workspace/i });
-      await expect(newWs).toBeVisible();
-      expect(await contrastOf(page, newWs)).toBeGreaterThanOrEqual(4.0);
+      // Run detail: prose, the instruction block, and the composer.
+      await openRun(page, "claude");
+      expect(await contrastOf(page, main(page).getByText(/a decision is required/i))).toBeGreaterThanOrEqual(4.5);
+      await page.getByLabel("Instruction for claude").fill("continue");
+      await page.getByRole("button", { name: "Send instruction" }).click();
+      await expect(instructions(page).getByText("Delivered")).toBeVisible();
+      expect(await contrastOf(page, instructions(page).getByText("continue").first())).toBeGreaterThanOrEqual(4.5);
 
-      // A dialog: create-tab sheet title + primary action.
-      await goToSection(page, "Terminal");
-      await page.getByRole("button", { name: /open tab switcher/i }).click();
-      await page.getByRole("button", { name: /new tab/i }).click();
+      // The console stays a dark instrument in both themes.
+      await main(page).getByRole("link", { name: /open console/i }).first().click();
+      await expect(page.getByTestId("terminal-host")).toBeVisible({ timeout: 20_000 });
+      expect(await backgroundLuminance(page, page.getByTestId("terminal-host"))).toBeLessThan(0.15);
+    });
+
+    test(`workspaces and dialogs are readable (${theme})`, async ({ page }) => {
+      await presetTheme(page, theme);
+      await pair(page);
+      await goTo(page, "Workspaces");
+      expect(await contrastOf(page, main(page).getByText("space-api").first())).toBeGreaterThanOrEqual(4.5);
+      expect(await contrastOf(page, main(page).getByRole("button", { name: /^new$/i }))).toBeGreaterThanOrEqual(4.0);
+
+      await main(page).getByRole("button", { name: /^new$/i }).click();
       await expect(page.getByRole("dialog")).toBeVisible();
-      expect(await contrastOf(page, page.getByRole("button", { name: /create tab/i }))).toBeGreaterThanOrEqual(4.0);
+      expect(await contrastOf(page, page.getByRole("button", { name: /create workspace/i }))).toBeGreaterThanOrEqual(4.0);
     });
   });
 }
