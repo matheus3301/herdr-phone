@@ -3,9 +3,25 @@ import { goTo, openRun, openWorkspace, pair, presetTheme } from "./helpers";
 
 /**
  * Screenshot review. Captures the production bundle against the mock herd at the
- * widths the design targets, in both themes, and writes PNGs to
- * e2e/__screenshots__ for a human (or an agent) to inspect.
+ * widths the design targets, in both themes.
+ *
+ * The capture path is deliberate. `e2e/__screenshots__/` is **tracked review
+ * documentation**, and a required gate that rewrites tracked files leaves a clean
+ * checkout dirty every time it runs — which is both confusing and a way for a
+ * visual change to land unreviewed. So the ordinary run captures into the
+ * gitignored Playwright artifacts directory, keeping every assertion in the gate
+ * (a capture that cannot navigate or renders the wrong theme still fails), and
+ * refreshing the tracked images is an explicit, separate act:
+ *
+ *     make screenshots        # or HERDR_PHONE_UPDATE_SCREENSHOTS=1
+ *
+ * The resulting diff is then reviewed like any other change.
  */
+const UPDATE_TRACKED = process.env.HERDR_PHONE_UPDATE_SCREENSHOTS === "1";
+const OUT_DIR = UPDATE_TRACKED ? "e2e/__screenshots__" : "test-results/screenshots";
+
+const shot = (name: string) => `${OUT_DIR}/${name}.png`;
+
 const SIZES = [
   { name: "iphone-390x844", width: 390, height: 844 },
   { name: "iphone-430x932", width: 430, height: 932 },
@@ -25,24 +41,24 @@ async function captureAll(page: Page, suffix: string, theme: "light" | "dark") {
   await expect
     .poll(() => page.evaluate(() => document.documentElement.classList.contains("light")))
     .toBe(theme === "light");
-  await page.screenshot({ path: `e2e/__screenshots__/agents-${suffix}.png` });
+  await page.screenshot({ path: shot(`agents-${suffix}`) });
 
   await openRun(page, "claude");
   await expect(page.getByRole("heading", { name: /observed activity/i })).toBeVisible();
   // Give the bounded pane read time to land so the fallback is visible.
   await expect(page.getByText(/recent terminal output/i)).toBeVisible();
-  await page.screenshot({ path: `e2e/__screenshots__/run-${suffix}.png` });
+  await page.screenshot({ path: shot(`run-${suffix}`) });
 
   await goTo(page, "Start run");
   await expect(page.getByRole("heading", { level: 1, name: "Start run" })).toBeVisible();
-  await page.screenshot({ path: `e2e/__screenshots__/start-run-${suffix}.png` });
+  await page.screenshot({ path: shot(`start-run-${suffix}`) });
 
   await goTo(page, "Workspaces");
   await expect(page.getByRole("heading", { level: 1, name: "Workspaces" })).toBeVisible();
-  await page.screenshot({ path: `e2e/__screenshots__/workspaces-${suffix}.png` });
+  await page.screenshot({ path: shot(`workspaces-${suffix}`) });
 
   await openWorkspace(page, "space-api");
-  await page.screenshot({ path: `e2e/__screenshots__/workspace-detail-${suffix}.png` });
+  await page.screenshot({ path: shot(`workspace-detail-${suffix}`) });
 }
 
 test.describe("screenshot review", () => {
@@ -81,7 +97,7 @@ test.describe("screenshot review", () => {
       await pair(page);
       await page.goto("/console/w1%3Ap1?generation=3");
       await expect(page.getByTestId("terminal-host")).toContainText("herdr", { timeout: 20_000 });
-      await page.screenshot({ path: `e2e/__screenshots__/console-${size.name}.png` });
+      await page.screenshot({ path: shot(`console-${size.name}`) });
     }
   });
 });

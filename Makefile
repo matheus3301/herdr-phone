@@ -81,6 +81,13 @@ test-web: web-install ## Run frontend unit and component tests
 test-e2e: web-install ## Run Playwright mobile journeys (Chromium Pixel 7, WebKit iPhone 15)
 	cd $(WEB) && $(NPM) run test:e2e
 
+# Refreshing the tracked review screenshots is deliberate and separate: the gate
+# above captures into web/test-results/ (gitignored) so it can never leave a clean
+# checkout dirty, and a visual change has to be reviewed as a real diff.
+.PHONY: screenshots
+screenshots: web-install ## Refresh the tracked review screenshots in web/e2e/__screenshots__
+	cd $(WEB) && HERDR_PHONE_UPDATE_SCREENSHOTS=1 $(NPM) run test:e2e -- --project=desktop e2e/screenshots.spec.ts
+
 .PHONY: build-web
 build-web: web-install ## Build the frontend and sync it into the Go embed dir
 	cd $(WEB) && $(NPM) run build

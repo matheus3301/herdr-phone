@@ -23,7 +23,7 @@ import type { Snapshot, WireObservedOutputPart } from "@/lib/types";
 /** The fallback's internal run id: pane plus generation. */
 const RUN_ID = "w1:p1~g3";
 /** The relay's authoritative run id for the same pane incarnation. */
-const RELAY_RUN_ID = "w1:p1@3";
+const RELAY_RUN_ID = "w1:p1@3#0123456789abcdef";
 
 function mount(runId = RUN_ID, snapshot: Snapshot | null = makeSnapshot()) {
   seedStore({ ready: true, snapshot, capabilities: makeCapabilities(), connection: "live" });
@@ -115,8 +115,9 @@ describe("Run detail — execution context", () => {
     await userEvent.click(await screen.findByRole("button", { name: /show full execution context/i }));
     expect(screen.getByText("w1:p1")).toBeInTheDocument();
     expect(screen.getByText("claude (claude)")).toBeInTheDocument();
-    // The worktree branch and the tab happen to share a name here.
     expect(screen.getAllByText("auth-refactor").length).toBeGreaterThan(0);
+    // Checkout provenance is named for what it is, and a linked worktree says so.
+    expect(screen.getByText("Linked worktree")).toBeInTheDocument();
     expect(screen.getByText("3")).toBeInTheDocument();
   });
 
