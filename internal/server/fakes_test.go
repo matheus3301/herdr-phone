@@ -125,6 +125,7 @@ type fakeState struct {
 	caps    json.RawMessage
 	content map[string][]byte
 	readErr error
+	runs    []RunSummary
 }
 
 func newFakeState() *fakeState {
@@ -134,6 +135,33 @@ func newFakeState() *fakeState {
 		gens:    map[string]uint64{"pane-1": 7},
 		caps:    json.RawMessage(`{"agent_kinds":["claude","codex"]}`),
 		content: map[string][]byte{"pane-1": []byte("last visible output")},
+		runs: []RunSummary{{
+			RunID:            "pane-1@7",
+			PaneID:           "pane-1",
+			PaneGeneration:   7,
+			AgentIncarnation: "0123456789abcdef",
+			WorkspaceID:      "w1",
+			WorkspaceLabel:   "space-api",
+			TabID:            "w1:t1",
+			TabLabel:         "agents",
+			TerminalID:       "term-1",
+			AgentKind:        "claude",
+			AgentName:        "auth",
+			DisplayAgent:     "Claude Code",
+			Title:            "Fix auth refresh",
+			Status:           "blocked",
+			InteractiveReady: true,
+			CWD:              "/code/space-api",
+			ForegroundCWD:    "/code/space-api",
+			Worktree: &RunWorktree{
+				RepoName:         "space-api",
+				RepoRoot:         "/code/space-api",
+				CheckoutPath:     "/code/space-api-auth",
+				IsLinkedWorktree: true,
+			},
+			Revision:       42,
+			StateChangeSeq: 9,
+		}},
 	}
 }
 
@@ -180,6 +208,30 @@ func (s *fakeState) Capabilities() json.RawMessage {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	return s.caps
+}
+
+func (s *fakeState) Runs() RunProjection {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return RunProjection{SnapshotHash: s.snap.Hash, Runs: slices.Clone(s.runs)}
+}
+
+func (s *fakeState) setRuns(runs []RunSummary) {
+	s.mu.Lock()
+	s.runs = runs
+	s.mu.Unlock()
+}
+
+func (s *fakeState) setContent(paneID string, content []byte) {
+	s.mu.Lock()
+	s.content[paneID] = content
+	s.mu.Unlock()
+}
+
+func (s *fakeState) setReadErr(err error) {
+	s.mu.Lock()
+	s.readErr = err
+	s.mu.Unlock()
 }
 
 func (s *fakeState) ReadPane(_ context.Context, paneID, _ string, _ int) ([]byte, error) {

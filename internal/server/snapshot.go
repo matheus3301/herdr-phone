@@ -37,12 +37,20 @@ type capabilitiesResponse struct {
 	Status       DaemonStatus    `json:"status"`
 	Tunnel       TunnelInfo      `json:"tunnel"`
 	Limits       limitsJSON      `json:"limits"`
+	// Runs advertises the structured run contract so the UI can decide at boot
+	// whether to render structured runs or fail closed to observed terminal
+	// output. It is the authoritative gate; the run routes repeat it so a single
+	// response is self-describing.
+	Runs runCapabilities `json:"runs"`
 }
 
 type limitsJSON struct {
-	MaxBodyBytes     int64 `json:"max_body_bytes"`
-	MaxPaneReadLines int   `json:"max_pane_read_lines"`
-	ConfirmationTTLs int   `json:"confirmation_ttl_seconds"`
+	MaxBodyBytes      int64 `json:"max_body_bytes"`
+	MaxPaneReadLines  int   `json:"max_pane_read_lines"`
+	ConfirmationTTLs  int   `json:"confirmation_ttl_seconds"`
+	MaxRunOutputLines int   `json:"max_run_output_lines"`
+	MaxRunOutputBytes int   `json:"max_run_output_bytes"`
+	MaxRuns           int   `json:"max_runs"`
 }
 
 func (s *Server) handleCapabilities(w http.ResponseWriter, r *http.Request) {
@@ -56,10 +64,14 @@ func (s *Server) handleCapabilities(w http.ResponseWriter, r *http.Request) {
 		Status:       status,
 		Tunnel:       s.deps.Tunnel.Tunnel(),
 		Limits: limitsJSON{
-			MaxBodyBytes:     s.cfg.MaxBodyBytes,
-			MaxPaneReadLines: s.cfg.MaxPaneReadLines,
-			ConfirmationTTLs: int(s.cfg.ConfirmationTTL.Seconds()),
+			MaxBodyBytes:      s.cfg.MaxBodyBytes,
+			MaxPaneReadLines:  s.cfg.MaxPaneReadLines,
+			ConfirmationTTLs:  int(s.cfg.ConfirmationTTL.Seconds()),
+			MaxRunOutputLines: s.cfg.MaxRunOutputLines,
+			MaxRunOutputBytes: s.cfg.MaxRunOutputBytes,
+			MaxRuns:           s.cfg.MaxRuns,
 		},
+		Runs: s.runCapabilities(),
 	}
 	body, err := json.Marshal(resp)
 	if err != nil {

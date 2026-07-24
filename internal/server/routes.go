@@ -41,6 +41,10 @@ func (s *Server) registerRoutes() {
 
 		{method: http.MethodGet, pattern: apiPrefix + "/snapshot", auth: authSession, handler: s.handleSnapshot},
 		{method: http.MethodGet, pattern: apiPrefix + "/panes/{pane_id}/read", auth: authSession, handler: s.handlePaneRead},
+		// The structured run contract. Both routes go through wrap like every
+		// other route, so they inherit the full middleware order unchanged.
+		{method: http.MethodGet, pattern: apiPrefix + "/runs", auth: authSession, handler: s.handleRuns},
+		{method: http.MethodGet, pattern: apiPrefix + "/runs/{pane_id}", auth: authSession, handler: s.handleRun},
 		{method: http.MethodGet, pattern: apiPrefix + "/directories", auth: authSession, handler: s.handleDirectories},
 		{method: http.MethodGet, pattern: apiPrefix + "/capabilities", auth: authSession, handler: s.handleCapabilities},
 

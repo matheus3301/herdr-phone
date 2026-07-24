@@ -94,6 +94,30 @@ Required contracts:
 - Set `min_herdr_version = "0.7.5"`. On startup, call `ping`, verify protocol 17,
   and tolerate unknown response fields.
 
+Verified absence of a conversation surface (`herdr api schema --json`, protocol
+17, schema version 1, 89 methods):
+
+- Herdr exposes **no** message, transcript, conversation, role, tool-call,
+  interaction, approval, diff, or test-result data. There is no method, event, or
+  result shape for any of them.
+- The only agent-observable signals are the five lifecycle states, per-pane and
+  per-agent identity/context, and rendered terminal text from `pane.read` /
+  `agent.read` (bounded, `revision`-stamped, with a `truncated` flag).
+- `agent.explain` returns an unconstrained value (`"explain": true` in the schema),
+  so it is not a stable contract and is not consumed.
+- `pane.report_agent*` are inbound authority assertions a supervisor writes; they
+  are not a read source for messages.
+- `session.snapshot` carries **no** top-level worktree array. The only worktree
+  context in a snapshot is `WorkspaceInfo.worktree`
+  (`repo_key`, `repo_name`, `repo_root`, `checkout_path`, `is_linked_worktree`).
+- `AgentInfo` additionally reports `launch_pending`, `title`, `state_labels`, and
+  `tokens`. The first two are consumed; `state_labels` and `tokens` are
+  agent-manifest-derived free text and are deliberately not yet on the wire.
+
+Consequently the relay must never synthesize semantic structure from terminal
+bytes. It advertises the absence of every semantic capability and serves the one
+thing it can prove: explicitly labelled observed terminal output (§12.1).
+
 ### 3.2 Cloudflared 2026.7.2 contract
 
 References:
@@ -437,6 +461,9 @@ Read routes:
 - `DELETE /session`
 - `GET /snapshot` with ETag and gzip
 - `GET /panes/{pane_id}/read?source=visible|recent|recent-unwrapped&lines=N`
+- `GET /runs` for the bounded, content-free run inbox (§12.1)
+- `GET /runs/{pane_id}?expected_generation=N[&source=...][&lines=N]` for one run
+  plus bounded observed output (§12.1)
 - `GET /directories?path=...` for directories only, confined to configured roots
 - `GET /capabilities`
 - `GET /events` WebSocket for snapshot/state updates
@@ -465,6 +492,119 @@ Responses use `{request_id, accepted, result}` or `{request_id, error:{code,
 message,retryable}}`. The server deadline is shorter than the client deadline and
 is checked again immediately before touching Herdr. Cache idempotent results by
 session/request id for five minutes so a network retry cannot repeat a mutation.
+
+A `request_id` is chosen by the client, so every idempotency entry — reservation
+and cached response alike — is bound to a fingerprint of the operation, the
+asserted `expected_generation`, and the normalized params. A reused id presenting
+a different fingerprint is rejected with a non-retryable `conflict`; it can never
+replay a response belonging to a different payload, and a cached success can never
+be handed back for a generation that was never validated. Key order and
+whitespace are not payload differences: the fingerprint is computed from
+canonicalized params.
+
+A failed mutation preserves the upstream structured distinction rather than
+flattening every failure into one code. The relay-side context cause wins first
+(`deadline_exceeded`, `unavailable`); otherwise the Herdr code maps to a stable
+API code:
+
+| Upstream | API code | Status | Retryable |
+|---|---|---|---|
+| `not_found` | `not_found` | 404 | no |
+| `invalid_params`, `invalid_request` | `bad_request` | 400 | no |
+| `feature_disabled`, `platform_unsupported`, `plugin_disabled`, `incompatible` | `unsupported` | 501 | no |
+| `stream_conflict` | `conflict` | 409 | no |
+| `timeout` | `deadline_exceeded` | 504 | yes |
+| `connect`, `transport`, `canceled` | `unavailable` | 503 | yes |
+| anything else / no code | `internal` | 502 | no |
+
+Only the code crosses the boundary. Upstream error *messages* are never
+forwarded, because a Herdr message can quote pane content, a path, or a command;
+every returned message comes from a static table. Retryable failures are never
+cached, so a legitimate retry re-attempts once Herdr recovers.
+
+### 12.1 Structured run contract
+
+Version 1. Herdr supplies no semantic conversation data (§3.1), so the contract is
+authoritative about identity and status and explicit about what it cannot know.
+
+`GET /runs` returns
+`{contract_version, capabilities, snapshot_hash, runs[], truncated}`. Each run is
+`{run_id, pane_id, pane_generation, agent_incarnation, workspace_id,
+workspace_label, tab_id, tab_label, terminal_id, agent_kind, agent_name,
+display_agent, title, status, interactive_ready, launch_pending, focused, cwd,
+foreground_cwd, worktree{repo_name, repo_root, checkout_path,
+is_linked_worktree}, revision, state_change_seq}`.
+
+- `run_id` is opaque. Operations are addressed by `pane_id` plus
+  `expected_generation`, never by parsing it.
+- `agent_incarnation` is a digest of the pane's occupant identity (terminal id,
+  agent kind, bound agent session). It is a digest, not the raw fingerprint,
+  because the session reference may be a filesystem path. It changes exactly when
+  `pane_generation` changes, so a run invalidates on either.
+- `status` is exactly one of `idle`, `working`, `blocked`, `done`, `unknown`. An
+  upstream value outside that set is reported as `unknown`; an unrecognized state
+  must never read as completion.
+- The run projection is derived from the same snapshot and the same generation map
+  the mutation guard uses, so a run's reported generation and a mutation guard can
+  never disagree. A pane with no live generation is not addressable and is
+  therefore not a run. An empty shell pane is not a run.
+- The list carries **no** output. Full output must never appear in a
+  topology-shaped projection or in the snapshot. `truncated` reports that the
+  `max_runs` bound applied, so a short list is never read as complete.
+
+`GET /runs/{pane_id}` returns `{contract_version, capabilities, run, parts[]}`.
+`expected_generation` is mandatory: live generations start at 1, so a missing,
+zero, or unparseable value is rejected rather than silently skipping the
+fresh-state check. The guard runs before any Herdr call.
+
+`parts` is ordered oldest-to-newest. This build emits exactly one part type:
+
+```json
+{"type":"observed_terminal_output","source":"recent-unwrapped","format":"text",
+ "lines":200,"bytes":1234,"truncated":false,"text":"..."}
+```
+
+It is terminal output Herdr rendered, labelled as such. It carries no role and
+must never be presented as an assistant message. A client must ignore unknown
+part types and must never interpret a part as a message unless its type says so.
+Adding a part type or a field does not bump `contract_version`.
+
+Errors are stable and sanitized:
+
+| Condition | Code | Status |
+|---|---|---|
+| missing/zero/unparseable `expected_generation` | `generation_stale` | 400 |
+| pane gone, or generation mismatch | `generation_stale` | 409 |
+| live guarded pane with no agent run | `run_unavailable` | 404 |
+| upstream `not_found` on the read | `run_unavailable` | 404 |
+| upstream timeout | `deadline_exceeded` | 504 |
+| upstream socket fault | `unavailable` | 503 |
+| unclassified read failure | `run_read_failed` | 502 |
+
+Capabilities are advertised on `GET /capabilities` (as `runs`) and repeated on
+every run response so a single response is self-describing:
+`{contract_version, supported, structured_messages, structured_tool_calls,
+structured_interactions, structured_diffs, structured_tests, structured_plans,
+observed_terminal_output, part_types[], output_sources[], max_output_bytes,
+max_output_lines, max_runs}`. Every semantic flag is `false` for Herdr 0.7.5. The
+UI gates presentation on these flags and fails closed to observed terminal output;
+it must never infer structure the relay did not advertise.
+
+Bounds are server defaults, like `max_pane_read_lines`: 400 output lines
+(200 default), 64 KiB of output text, 200 runs. Oversized output keeps the most
+recent tail — cut on a UTF-8 rune boundary — and reports `truncated: true`.
+
+No new event type or poll is introduced. Run identity and status are part of the
+hashed topology projection, so any change to a pane's or agent's status, occupant,
+or context already rebroadcasts on `GET /events`; the client treats that as a
+wakeup and refetches `/runs`. Snapshot remains truth and events remain wakeups: a
+missed event costs one poll interval, never correctness.
+
+Run responses are `Cache-Control: no-store`. Nothing is stored: no transcript,
+output, or run state is cached, persisted, or written to disk, so each request
+reads fresh from Herdr and there is no run-state store to bound or race.
+`detection` is not an accepted output source — it is Herdr's classifier buffer,
+not operator-facing output.
 
 ## 13. Terminal Bridge
 
@@ -658,6 +798,9 @@ Explicitly excluded from the browser:
 - Audit every structural mutation with verified identity, resource ids, result,
   request id, and timestamp. Record terminal input only as byte count and category,
   never content.
+- Audit an observed-output read (`run.read`) with identity, pane id, outcome, and a
+  byte count only. A failed read records the error code and no byte count. Run
+  output is terminal content: never log or persist any of it.
 - Sanitize control characters and terminal escape sequences from every log line.
 - Expose current versions, protocol, mode, public URL, tunnel health, Herdr health,
   and connected client count only to an authenticated session and local status.
@@ -688,6 +831,19 @@ Required Go coverage:
   backpressure, and ANSI security filtering including fragmented OSC/DCS.
 - HTTP body limits, ETags, compression, mutation idempotency, confirmation nonces,
   deadlines, all operation allowlists, and audit redaction.
+- Idempotency binding: a reused `request_id` with a different operation, asserted
+  generation, or params is rejected rather than replayed; a canonically identical
+  retry still replays exactly once.
+- Structured upstream error preservation: each Herdr code maps to its own API
+  code/status/retryable outcome, retryable failures are not cached, and no
+  upstream message is forwarded.
+- Run contract: exact JSON wire for the list and detail responses, capability
+  advertisement on all three surfaces, mandatory/stale/absent generation
+  rejection before any Herdr call, `run_unavailable` versus `run_read_failed`
+  distinction, output byte/line bounds and UTF-8-safe tail truncation, control
+  stripping of observed output and display fields, absence of output in the
+  inbox, no-store headers, route-table coverage, and audit records proven free of
+  run output.
 - Manifest/version/build path agreement and Go 1.26 agreement.
 
 Frontend tests:

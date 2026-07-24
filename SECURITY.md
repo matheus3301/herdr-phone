@@ -98,6 +98,54 @@ HTTP request and every WebSocket handshake**:
   `exec.CommandContext` with a nonzero `WaitDelay` and their own process group;
   no shell is ever invoked.
 
+### Agent runs and observed output
+
+The run API supervises agent runs from the phone. Herdr 0.7.5 supplies no
+semantic conversation data, so the relay never manufactures any.
+
+- **Nothing is stored.** No transcript, run state, or agent output is cached,
+  persisted, or written to disk. Every run read goes to Herdr and lives only for
+  the duration of the response, which is served `Cache-Control: no-store`. Adding
+  on-disk transcript storage would require revising this threat model first.
+- **No content is logged.** A run read is audited as identity, pane id, outcome,
+  and a byte count. Agent output, commands, and titles never enter a log or audit
+  record.
+- **No inference from bytes.** The relay does not derive message roles, approvals,
+  tool calls, diffs, or test results from terminal output, and it does not parse
+  agent-specific transcript files. Output is served as one explicitly typed
+  `observed_terminal_output` part, and the capability document advertises every
+  semantic capability as unsupported so the UI fails closed instead of guessing.
+- **Guarded by generation.** A run read requires the canonical `pane_id` and a
+  nonzero `expected_generation`, checked before any Herdr call, so a client can
+  never read through a recycled pane or a replaced agent. Run identity is bound to
+  the pane generation and an agent-incarnation digest; either change invalidates
+  the run.
+- **Bounded and stripped.** Output is bounded by line count and byte size
+  (truncation keeps the most recent tail on a UTF-8 boundary and is reported), and
+  every control character except LF and TAB is stripped from it — a repaint
+  sequence cannot rewrite what an operator already read in a non-terminal
+  renderer. Labels, titles, and paths are folded to a single safe line and
+  length-bounded.
+- **No session references published.** The agent incarnation is a digest, not the
+  raw occupant fingerprint, because Herdr may report an agent session as a
+  filesystem path.
+- **No new upstream surface.** The run API reads only `pane.read` / `agent.read`
+  and the existing snapshot. There is still no generic Herdr RPC and no
+  browser-supplied method name.
+
+### Replay and error fidelity
+
+- A `request_id` is client-chosen, so each idempotency entry is bound to a
+  fingerprint of the operation, the asserted lifecycle generation, and the
+  canonicalized params. A reused id with different content is rejected rather than
+  replayed, so it can neither retrieve another payload's response nor obtain a
+  cached success for a generation that was never validated.
+- Upstream failures keep their distinct meaning (missing resource, unsupported
+  feature, conflict, timeout, transport fault) so the client is never told to
+  retry something that cannot succeed. Only the upstream *code* crosses the
+  boundary; upstream messages are never forwarded, because a Herdr message can
+  quote pane content, a path, or a command.
+
 ### Secrets
 
 - Tunnel tokens are supplied via `--token-file` / `TUNNEL_TOKEN_FILE` or a
@@ -107,7 +155,8 @@ HTTP request and every WebSocket handshake**:
   by group or other.
 - No secret is written to config, runtime state, logs, the audit trail, browser
   storage, test snapshots, or git. The audit trail records terminal input only
-  as a byte count and category, never content.
+  as a byte count and category, and an observed-output read only as a byte count
+  and outcome — never content.
 
 ## Immediate Revocation
 
@@ -190,4 +239,7 @@ privately: a way to reach an authorized control path without a valid Access JWT
 (named mode) or valid session; any secret appearing in argv, logs, state,
 browser storage, or git; an escape sequence reaching the browser or a log
 unfiltered; a mutation executing without its required confirmation nonce or
-after a lifecycle-generation change; or a way to bind the origin off loopback.
+after a lifecycle-generation change; a run read succeeding without a matching
+lifecycle generation, or agent output reaching a log, an audit record, or disk; a
+reused `request_id` replaying a response for a different payload; or a way to bind
+the origin off loopback.

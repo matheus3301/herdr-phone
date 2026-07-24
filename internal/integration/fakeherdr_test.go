@@ -2,6 +2,7 @@ package integration
 
 import (
 	"bufio"
+	"bytes"
 	"encoding/json"
 	"net"
 	"os"
@@ -20,6 +21,36 @@ type fakeHerdr struct {
 
 	mu       sync.Mutex
 	lastByOp map[string]json.RawMessage
+	// snapshot is the `snapshot` object returned by session.snapshot. Tests that
+	// exercise a projection over real topology replace it.
+	snapshot string
+	// readText is the text returned by pane.read/agent.read.
+	readText string
+}
+
+// emptySnapshot is the default session.snapshot payload: a valid but empty
+// topology.
+const emptySnapshot = `{"version":"1","protocol":17,"workspaces":[],"tabs":[],"panes":[],"agents":[],"worktrees":[],"layouts":[]}`
+
+// setSnapshot replaces the topology session.snapshot returns. The payload is
+// compacted because the wire protocol is newline-delimited: an indented fixture
+// would break framing.
+func (f *fakeHerdr) setSnapshot(snapshot string) {
+	f.t.Helper()
+	var buf bytes.Buffer
+	if err := json.Compact(&buf, []byte(snapshot)); err != nil {
+		f.t.Fatalf("snapshot fixture is not valid JSON: %v", err)
+	}
+	f.mu.Lock()
+	f.snapshot = buf.String()
+	f.mu.Unlock()
+}
+
+// setReadText replaces the text pane.read/agent.read return.
+func (f *fakeHerdr) setReadText(text string) {
+	f.mu.Lock()
+	f.readText = text
+	f.mu.Unlock()
 }
 
 // startFakeHerdr creates a Unix socket under /tmp (short path, so AF_UNIX bind
@@ -36,7 +67,7 @@ func startFakeHerdr(t *testing.T) *fakeHerdr {
 	if err != nil {
 		t.Fatalf("listen: %v", err)
 	}
-	f := &fakeHerdr{t: t, listener: ln, path: path, lastByOp: map[string]json.RawMessage{}}
+	f := &fakeHerdr{t: t, listener: ln, path: path, lastByOp: map[string]json.RawMessage{}, snapshot: emptySnapshot}
 	t.Cleanup(func() { _ = ln.Close() })
 	go f.serve()
 	return f
@@ -95,13 +126,22 @@ func (f *fakeHerdr) params(method string) json.RawMessage {
 }
 
 func (f *fakeHerdr) response(id, method string) []byte {
+	f.mu.Lock()
+	snapshot, readText := f.snapshot, f.readText
+	f.mu.Unlock()
+
 	switch method {
 	case "ping":
 		return []byte(`{"id":"` + id + `","result":{"type":"pong","version":"0.7.5","protocol":17,"capabilities":{"live_handoff":true}}}`)
 	case "session.snapshot":
-		return []byte(`{"id":"` + id + `","result":{"type":"session_snapshot","snapshot":{"version":"1","protocol":17,"workspaces":[],"tabs":[],"panes":[],"agents":[],"worktrees":[],"layouts":[]}}}`)
+		return []byte(`{"id":"` + id + `","result":{"type":"session_snapshot","snapshot":` + snapshot + `}}`)
 	case "events.subscribe":
 		return []byte(`{"id":"` + id + `","result":{"type":"subscription_started"}}`)
+	case "pane.read", "agent.read":
+		text, _ := json.Marshal(readText)
+		return []byte(`{"id":"` + id + `","result":{"type":"pane_read","read":{"pane_id":"w1:p1",` +
+			`"workspace_id":"w1","tab_id":"w1:t1","source":"recent_unwrapped","format":"text",` +
+			`"text":` + string(text) + `,"revision":42,"truncated":false}}}`)
 	}
 	typ := mutationResultType(method)
 	if typ == "" {

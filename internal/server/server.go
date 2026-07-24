@@ -37,6 +37,12 @@ type Config struct {
 	RateBurst              int
 	MaxPaneReadLines       int
 
+	// Run contract bounds (SPEC §12.1). Observed run output is bounded tighter
+	// than a raw pane read: it is a supervision view, not a log export.
+	MaxRunOutputLines int
+	MaxRunOutputBytes int
+	MaxRuns           int
+
 	// Terminal tunables passed through to each terminal bridge.
 	Terminal terminal.Options
 }
@@ -68,6 +74,15 @@ func (c *Config) applyDefaults() {
 	}
 	if c.MaxPaneReadLines <= 0 {
 		c.MaxPaneReadLines = 2000
+	}
+	if c.MaxRunOutputLines <= 0 {
+		c.MaxRunOutputLines = 400
+	}
+	if c.MaxRunOutputBytes <= 0 {
+		c.MaxRunOutputBytes = 64 << 10 // 64 KiB
+	}
+	if c.MaxRuns <= 0 {
+		c.MaxRuns = 200
 	}
 }
 

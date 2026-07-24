@@ -94,6 +94,8 @@ func TestRouteTableCoversSpecEndpoints(t *testing.T) {
 		apiPrefix + "/session",
 		apiPrefix + "/snapshot",
 		apiPrefix + "/panes/{pane_id}/read",
+		apiPrefix + "/runs",
+		apiPrefix + "/runs/{pane_id}",
 		apiPrefix + "/directories",
 		apiPrefix + "/capabilities",
 		apiPrefix + "/events",
