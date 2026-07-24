@@ -187,7 +187,104 @@ export interface WireCapabilities {
     max_body_bytes: number;
     max_pane_read_lines: number;
     confirmation_ttl_seconds: number;
+    /** Present only on a relay that ships the structured run contract. */
+    max_run_output_lines?: number;
+    max_run_output_bytes?: number;
+    max_runs?: number;
   };
+  /** Absent on a relay older than the structured run contract (SPEC §12.1). */
+  runs?: WireRunCapabilities;
+}
+
+/* ------------------------------------------------- structured run contract */
+
+/**
+ * SPEC §12.1, contract version 1 — mirrors internal/server/runs.go byte for
+ * byte. Every semantic flag is `false` on Herdr 0.7.5: the relay is
+ * authoritative about identity and status and explicit about what it cannot
+ * know, and the UI must gate presentation on these flags rather than infer
+ * structure the relay never advertised.
+ */
+export interface WireRunCapabilities {
+  contract_version: number;
+  supported: boolean;
+  structured_messages: boolean;
+  structured_tool_calls: boolean;
+  structured_interactions: boolean;
+  structured_diffs: boolean;
+  structured_tests: boolean;
+  structured_plans: boolean;
+  observed_terminal_output: boolean;
+  part_types: string[];
+  output_sources: string[];
+  max_output_bytes: number;
+  max_output_lines: number;
+  max_runs: number;
+}
+
+export interface WireRunWorktree {
+  repo_name: string;
+  repo_root: string;
+  checkout_path: string;
+  is_linked_worktree: boolean;
+}
+
+/** One run's authoritative identity, execution context, and status. Never output. */
+export interface WireRunSummary {
+  run_id: string;
+  pane_id: string;
+  pane_generation: number;
+  agent_incarnation: string;
+  workspace_id: string;
+  workspace_label?: string;
+  tab_id: string;
+  tab_label?: string;
+  terminal_id: string;
+  agent_kind: string;
+  agent_name?: string;
+  display_agent?: string;
+  title?: string;
+  /** idle | working | blocked | done | unknown. Anything else reads as unknown. */
+  status: string;
+  interactive_ready: boolean;
+  launch_pending: boolean;
+  focused: boolean;
+  cwd?: string;
+  foreground_cwd?: string;
+  worktree?: WireRunWorktree;
+  revision: number;
+  state_change_seq: number;
+}
+
+export interface WireRunsResponse {
+  contract_version: number;
+  capabilities: WireRunCapabilities;
+  snapshot_hash: string;
+  runs: WireRunSummary[];
+  /** True when the relay's max_runs bound applied, so a short list is not complete. */
+  truncated: boolean;
+}
+
+/**
+ * The only part type this contract emits. It is terminal output Herdr rendered,
+ * labelled as such: it carries no role and must never be presented as an
+ * assistant message. A client ignores part types it does not know.
+ */
+export interface WireObservedOutputPart {
+  type: string;
+  source: string;
+  format: string;
+  lines: number;
+  bytes: number;
+  truncated: boolean;
+  text: string;
+}
+
+export interface WireRunResponse {
+  contract_version: number;
+  capabilities: WireRunCapabilities;
+  run: WireRunSummary;
+  parts: WireObservedOutputPart[];
 }
 
 export interface WireIdentity {
@@ -327,8 +424,33 @@ export interface Snapshot {
   focusedPaneId: string | null;
 }
 
+/**
+ * The structured run contract as the UI consumes it. Null when the relay does
+ * not advertise it, or advertises a contract version this build does not
+ * implement — either way the UI fails closed to the snapshot + `pane.read`
+ * fallback rather than guessing at a shape it cannot verify.
+ */
+export interface RunContract {
+  contractVersion: number;
+  supported: boolean;
+  structuredMessages: boolean;
+  structuredToolCalls: boolean;
+  structuredInteractions: boolean;
+  structuredDiffs: boolean;
+  structuredTests: boolean;
+  structuredPlans: boolean;
+  observedTerminalOutput: boolean;
+  partTypes: string[];
+  outputSources: string[];
+  maxOutputBytes: number;
+  maxOutputLines: number;
+  maxRuns: number;
+}
+
 export interface Capabilities {
   operations: string[];
+  /** Null on a relay without the versioned run contract (SPEC §12.1). */
+  runs: RunContract | null;
   agentKinds: string[];
   /** False when the backend could not discover startable kinds (disables start). */
   agentKindsAvailable: boolean;

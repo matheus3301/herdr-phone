@@ -66,6 +66,28 @@ export async function replacePane(page: Page, paneId: string) {
   return (await res.json()) as { pane_id: string; generation: number };
 }
 
+/**
+ * Reconfigure the mock's structured run contract (test-only hook).
+ *
+ * `supported: false` models an OLDER relay: `/capabilities` drops the `runs`
+ * document and both run routes 404, which is what the browser must fail closed
+ * against.
+ */
+export async function setRunContract(
+  page: Page,
+  body: { supported?: boolean; max_runs?: number; output_padding?: number },
+) {
+  await page.request.post("/api/v1/__run_contract", { data: body });
+}
+
+/** Make the next observed-output read fail once with a stable relay code. */
+export async function failNextRunRead(
+  page: Page,
+  body: { status?: number; code?: string; message?: string } = {},
+) {
+  await page.request.post("/api/v1/__fail_next_run_read", { data: body });
+}
+
 /** Persist a theme before the app boots (the prefs store reads it on load). */
 export async function presetTheme(page: Page, theme: "light" | "dark") {
   await page.addInitScript((t) => {

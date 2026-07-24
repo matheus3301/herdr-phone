@@ -12,14 +12,23 @@
 import type {
   AgentStatus,
   Capabilities,
+  RunContract,
   SessionInfo,
   Snapshot,
   WireCapabilities,
   WirePairResponse,
+  WireRunCapabilities,
   WireSnapshotEnvelope,
   WireTopology,
   Worktree,
 } from "./types";
+
+/**
+ * The one run-contract version this build implements (SPEC §12.1). The relay
+ * bumps it only on a breaking change, so an unrecognized version means the
+ * shape cannot be trusted and the UI must fail closed to the fallback.
+ */
+export const RUN_CONTRACT_VERSION = 1;
 
 function status(s: AgentStatus | undefined | null): AgentStatus {
   return s ?? "unknown";
@@ -128,11 +137,41 @@ export function normalizeSnapshot(env: WireSnapshotEnvelope): Snapshot | null {
   };
 }
 
+/**
+ * Normalize the advertised run contract, or return null so the UI falls back.
+ *
+ * Null is returned for an absent document, an unimplemented contract version,
+ * or `supported: false`. Nothing is inferred from the presence of a field: a
+ * relay that does not say it supports structured runs does not support them.
+ */
+export function normalizeRunContract(runs: WireRunCapabilities | undefined | null): RunContract | null {
+  if (!runs) return null;
+  if (runs.contract_version !== RUN_CONTRACT_VERSION) return null;
+  if (!runs.supported) return null;
+  return {
+    contractVersion: runs.contract_version,
+    supported: true,
+    structuredMessages: !!runs.structured_messages,
+    structuredToolCalls: !!runs.structured_tool_calls,
+    structuredInteractions: !!runs.structured_interactions,
+    structuredDiffs: !!runs.structured_diffs,
+    structuredTests: !!runs.structured_tests,
+    structuredPlans: !!runs.structured_plans,
+    observedTerminalOutput: !!runs.observed_terminal_output,
+    partTypes: runs.part_types ?? [],
+    outputSources: runs.output_sources ?? [],
+    maxOutputBytes: runs.max_output_bytes ?? 0,
+    maxOutputLines: runs.max_output_lines ?? 0,
+    maxRuns: runs.max_runs ?? 0,
+  };
+}
+
 export function normalizeCapabilities(c: WireCapabilities, phoneVersion: string): Capabilities {
   const doc = c.capabilities ?? ({} as WireCapabilities["capabilities"]);
   const mode = c.status?.mode === "named" ? "named" : "quick";
   return {
     operations: c.operations ?? [],
+    runs: normalizeRunContract(c.runs),
     agentKinds: doc.agent_kinds ?? [],
     agentKindsAvailable: Array.isArray(doc.agent_kinds),
     mode,

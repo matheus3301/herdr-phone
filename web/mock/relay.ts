@@ -201,6 +201,125 @@ function envelope() {
   return { version: herd.seq, hash: `h${herd.seq}`, data, updated_at: new Date(clock).toISOString() };
 }
 
+/* ------------------------------------------- structured run contract (§12.1) */
+
+/**
+ * The run contract's server-side bounds and switches. `runContract.supported`
+ * models an OLDER relay when false: `/capabilities` then omits `runs` entirely
+ * and both run routes 404, which is exactly what the browser must fail closed
+ * against. `maxRuns` is lowered by a test hook to exercise list truncation.
+ */
+const runContract = {
+  supported: true,
+  contractVersion: 1,
+  maxOutputLines: 400,
+  maxOutputBytes: 65_536,
+  maxRuns: 200,
+};
+
+const RUN_CONTRACT_VERSION = 1;
+const PART_OBSERVED_TERMINAL_OUTPUT = "observed_terminal_output";
+const DEFAULT_RUN_OUTPUT_LINES = 200;
+const RUN_OUTPUT_SOURCES = ["recent", "recent-unwrapped", "visible"];
+
+/** Mirrors internal/server/runs.go runCapabilities: every semantic flag false. */
+function runCapabilities() {
+  return {
+    contract_version: RUN_CONTRACT_VERSION,
+    supported: true,
+    structured_messages: false,
+    structured_tool_calls: false,
+    structured_interactions: false,
+    structured_diffs: false,
+    structured_tests: false,
+    structured_plans: false,
+    observed_terminal_output: true,
+    part_types: [PART_OBSERVED_TERMINAL_OUTPUT],
+    output_sources: RUN_OUTPUT_SOURCES,
+    max_output_bytes: runContract.maxOutputBytes,
+    max_output_lines: runContract.maxOutputLines,
+    max_runs: runContract.maxRuns,
+  };
+}
+
+/** A 16-hex-character digest of the pane's occupant, as internal/state does. */
+function incarnation(paneId: string): string {
+  const pane = herd.panes.find((p) => p.pane_id === paneId);
+  const agent = herd.agents.find((a) => a.pane_id === paneId);
+  const fingerprint = `${pane?.terminal_id ?? ""}|${pane?.agent ?? agent?.agent ?? ""}|${agent?.name ?? ""}|${herd.generations[paneId] ?? 0}`;
+  let h1 = 0x811c9dc5;
+  let h2 = 0x01000193;
+  for (let i = 0; i < fingerprint.length; i++) {
+    h1 = Math.imul(h1 ^ fingerprint.charCodeAt(i), 0x01000193) >>> 0;
+    h2 = Math.imul(h2 + fingerprint.charCodeAt(i), 0x85ebca6b) >>> 0;
+  }
+  return (h1.toString(16).padStart(8, "0") + h2.toString(16).padStart(8, "0")).slice(0, 16);
+}
+
+const RUN_STATUSES = ["idle", "working", "blocked", "done", "unknown"];
+
+/**
+ * Project the herd into runs exactly as internal/state/runs.go does: an empty
+ * shell pane is not a run, a pane with no live generation is not addressable and
+ * so is not a run, an unrecognized status reads as `unknown`, and the list is
+ * ordered by pane id.
+ */
+function projectRuns() {
+  const runs = herd.panes
+    .filter((p) => {
+      const agent = herd.agents.find((a) => a.pane_id === p.pane_id);
+      if (!p.agent && !agent) return false;
+      return herd.generations[p.pane_id] !== undefined;
+    })
+    .map((p) => {
+      const agent = herd.agents.find((a) => a.pane_id === p.pane_id);
+      const workspace = herd.workspaces.find((w) => w.workspace_id === p.workspace_id);
+      const tab = herd.tabs.find((t) => t.tab_id === p.tab_id);
+      const worktree = herd.worktrees.find((w) => w.open_workspace_id === p.workspace_id);
+      const generation = herd.generations[p.pane_id];
+      const rawStatus = p.agent_status || agent?.agent_status || "";
+      const status = RUN_STATUSES.includes(rawStatus) ? rawStatus : "unknown";
+      // `omitempty` on the Go struct: an empty optional field is absent from the
+      // wire, not present as "". The browser must cope with either.
+      const optional = (key: string, value: string | undefined) => (value ? { [key]: value } : {});
+      return {
+        run_id: `${p.pane_id}@${generation}`,
+        pane_id: p.pane_id,
+        pane_generation: generation,
+        agent_incarnation: incarnation(p.pane_id),
+        workspace_id: p.workspace_id,
+        ...optional("workspace_label", workspace?.label),
+        tab_id: p.tab_id,
+        ...optional("tab_label", tab?.label),
+        terminal_id: p.terminal_id,
+        agent_kind: p.agent || agent?.agent || "",
+        ...optional("agent_name", agent?.name),
+        ...optional("display_agent", p.display_agent),
+        ...optional("title", p.title || agent?.terminal_title_stripped),
+        status,
+        interactive_ready: agent?.interactive_ready ?? false,
+        launch_pending: false,
+        focused: p.focused,
+        ...optional("cwd", p.cwd),
+        ...optional("foreground_cwd", p.foreground_cwd),
+        ...(worktree
+          ? {
+              worktree: {
+                repo_name: worktree.label,
+                repo_root: worktree.path,
+                checkout_path: worktree.path,
+                is_linked_worktree: worktree.is_linked_worktree,
+              },
+            }
+          : {}),
+        revision: p.revision,
+        state_change_seq: agent?.state_change_seq ?? 0,
+      };
+    });
+  runs.sort((a, b) => (a.pane_id < b.pane_id ? -1 : a.pane_id > b.pane_id ? 1 : 0));
+  return runs;
+}
+
 function capabilities() {
   return {
     version: 1,
@@ -214,7 +333,21 @@ function capabilities() {
     capabilities: { herdr_version: "0.7.5", herdr_protocol: 17, live_handoff: true, agent_kinds: ["claude", "codex", "opencode", "gemini", "cursor"] },
     status: { version: "0.1.0", protocol: 17, mode: "quick", ready: true, herdr: { healthy: true }, state: { healthy: true }, clients: eventClients.size },
     tunnel: { mode: "quick", public_url: "https://example.trycloudflare.com", health: { healthy: true, detail: "ready" } },
-    limits: { max_body_bytes: 1048576, max_pane_read_lines: 5000, confirmation_ttl_seconds: 30 },
+    limits: {
+      max_body_bytes: 1048576,
+      max_pane_read_lines: 5000,
+      confirmation_ttl_seconds: 30,
+      ...(runContract.supported
+        ? {
+            max_run_output_lines: runContract.maxOutputLines,
+            max_run_output_bytes: runContract.maxOutputBytes,
+            max_runs: runContract.maxRuns,
+          }
+        : {}),
+    },
+    // An older relay has no `runs` document at all, and the browser must fail
+    // closed to snapshot + pane.read when it is absent.
+    ...(runContract.supported ? { runs: runCapabilities() } : {}),
   };
 }
 
@@ -709,6 +842,116 @@ function handleConfirmations(res: ServerResponse, body: Record<string, unknown>)
   send(res, 200, issueNonce(operation, resourceId, expectedGeneration, params));
 }
 
+/** The bytes a pane last rendered. The same text feeds both read surfaces. */
+function paneOutput(paneId: string): string {
+  const agent = herd.agents.find((a) => a.pane_id === paneId);
+  if (!agent) return `$ cd ${paneId}\n$ `;
+  return `$ ${agent.agent} --resume\n${agent.terminal_title_stripped || "working"}\n· reading src/server/reconnect.ts\n· editing src/server/reconnect.ts\n${"·".repeat(runOutputPadding)}\n$ `;
+}
+
+/** Test-only: pad observed output so the byte bound (and truncation) applies. */
+let runOutputPadding = 0;
+
+/** Test-only: make the next observed-output read fail once with a given code. */
+let failNextRunRead: { status: number; code: string; message: string } | null = null;
+
+/** Byte-bound the tail, cut on a UTF-8 boundary, exactly as the relay does. */
+function boundObservedText(text: string, maxBytes: number): { text: string; truncated: boolean } {
+  const buf = Buffer.from(text, "utf8");
+  if (maxBytes <= 0 || buf.length <= maxBytes) return { text, truncated: false };
+  let tail = buf.subarray(buf.length - maxBytes);
+  // Advance past a partial leading rune so the result is always valid UTF-8.
+  let at = 0;
+  while (at < tail.length && (tail[at] & 0xc0) === 0x80) at++;
+  tail = tail.subarray(at);
+  return { text: tail.toString("utf8"), truncated: true };
+}
+
+function runError(res: ServerResponse, status: number, code: string, message: string) {
+  // internal/server/errors.go writeError: static message, no retryable flag.
+  send(res, status, { error: { code, message } }, { "Cache-Control": "no-store" });
+}
+
+/**
+ * `GET /runs/{pane_id}` — the same guard order as internal/server/runs.go:
+ * mandatory nonzero generation, then source/lines validation, then the
+ * generation check *before* any read, then the run lookup, then the read.
+ */
+function handleRunDetail(res: ServerResponse, paneId: string, url: URL): void {
+  if (!paneId) {
+    runError(res, 400, "bad_request", "missing pane id");
+    return;
+  }
+  const raw = url.searchParams.get("expected_generation");
+  const expected = raw === null ? NaN : Number(raw);
+  if (raw === null || raw === "" || !Number.isInteger(expected) || expected <= 0) {
+    runError(res, 400, "generation_stale", "expected_generation is required to read a run");
+    return;
+  }
+  const source = url.searchParams.get("source") || "recent-unwrapped";
+  if (!RUN_OUTPUT_SOURCES.includes(source)) {
+    runError(res, 400, "bad_request", "invalid source");
+    return;
+  }
+  let lines = DEFAULT_RUN_OUTPUT_LINES;
+  const rawLines = url.searchParams.get("lines");
+  if (rawLines) {
+    const n = Number(rawLines);
+    if (!Number.isInteger(n) || n <= 0) {
+      runError(res, 400, "bad_request", "invalid lines");
+      return;
+    }
+    lines = n;
+  }
+  if (lines > runContract.maxOutputLines) lines = runContract.maxOutputLines;
+
+  const current = herd.generations[paneId];
+  if (current === undefined) {
+    runError(res, 409, "generation_stale", "pane no longer exists");
+    return;
+  }
+  if (current !== expected) {
+    runError(res, 409, "generation_stale", "pane changed; refresh and retry");
+    return;
+  }
+
+  const run = projectRuns().find((r) => r.pane_id === paneId);
+  if (!run) {
+    runError(res, 404, "run_unavailable", "no agent run occupies this pane");
+    return;
+  }
+
+  if (failNextRunRead) {
+    const injected = failNextRunRead;
+    failNextRunRead = null;
+    runError(res, injected.status, injected.code, injected.message);
+    return;
+  }
+
+  const bounded = boundObservedText(paneOutput(paneId), runContract.maxOutputBytes);
+  send(
+    res,
+    200,
+    {
+      contract_version: RUN_CONTRACT_VERSION,
+      capabilities: runCapabilities(),
+      run,
+      parts: [
+        {
+          type: PART_OBSERVED_TERMINAL_OUTPUT,
+          source,
+          format: "text",
+          lines,
+          bytes: Buffer.byteLength(bounded.text, "utf8"),
+          truncated: bounded.truncated,
+          text: bounded.text,
+        },
+      ],
+    },
+    { "Cache-Control": "no-store" },
+  );
+}
+
 async function handleApi(req: IncomingMessage, res: ServerResponse, url: URL): Promise<boolean> {
   const path = url.pathname.replace("/api/v1", "");
   const method = req.method ?? "GET";
@@ -725,6 +968,33 @@ async function handleApi(req: IncomingMessage, res: ServerResponse, url: URL): P
     terminalOwners.clear();
     failNext.clear();
     outage = false;
+    runContract.supported = true;
+    runContract.maxRuns = 200;
+    runOutputPadding = 0;
+    failNextRunRead = null;
+    send(res, 200, { ok: true });
+    return true;
+  }
+  if (path === "/__run_contract" && method === "POST") {
+    // Test-only: model an OLDER relay (`supported: false` removes the `runs`
+    // capability document and both run routes), lower the list bound to
+    // exercise truncation, or pad observed output past the byte bound.
+    const body = await readBody(req);
+    if (body.supported !== undefined) runContract.supported = !!body.supported;
+    if (body.max_runs !== undefined) runContract.maxRuns = Number(body.max_runs);
+    if (body.output_padding !== undefined) runOutputPadding = Number(body.output_padding);
+    broadcast();
+    send(res, 200, { supported: runContract.supported, max_runs: runContract.maxRuns });
+    return true;
+  }
+  if (path === "/__fail_next_run_read" && method === "POST") {
+    // Test-only: the next observed-output read fails once with a stable code.
+    const body = await readBody(req);
+    failNextRunRead = {
+      status: Number(body.status ?? 502),
+      code: String(body.code ?? "run_read_failed"),
+      message: String(body.message ?? "run output unavailable"),
+    };
     send(res, 200, { ok: true });
     return true;
   }
@@ -833,11 +1103,44 @@ async function handleApi(req: IncomingMessage, res: ServerResponse, url: URL): P
       return true;
     }
     const lines = Number(url.searchParams.get("lines") ?? 100);
-    const agent = herd.agents.find((a) => a.pane_id === paneId);
-    const content = agent
-      ? `$ ${agent.agent} --resume\n${agent.terminal_title_stripped || "working"}\n· reading src/server/reconnect.ts\n· editing src/server/reconnect.ts\n$ `
-      : `$ cd ${paneId}\n$ `;
-    send(res, 200, { pane_id: paneId, source: url.searchParams.get("source") ?? "visible", lines, content });
+    send(res, 200, {
+      pane_id: paneId,
+      source: url.searchParams.get("source") ?? "visible",
+      lines,
+      content: paneOutput(paneId),
+    });
+    return true;
+  }
+  if (path === "/runs" && method === "GET") {
+    if (!isPaired(req)) return unauthorized(res);
+    if (!runContract.supported) {
+      // An older relay has no run routes at all.
+      send(res, 404, { error: { code: "not_found", message: "unknown endpoint" } });
+      return true;
+    }
+    const all = projectRuns();
+    const truncated = all.length > runContract.maxRuns;
+    send(
+      res,
+      200,
+      {
+        contract_version: RUN_CONTRACT_VERSION,
+        capabilities: runCapabilities(),
+        snapshot_hash: `h${herd.seq}`,
+        runs: truncated ? all.slice(0, runContract.maxRuns) : all,
+        truncated,
+      },
+      { "Cache-Control": "no-store" },
+    );
+    return true;
+  }
+  if (path.startsWith("/runs/") && method === "GET") {
+    if (!isPaired(req)) return unauthorized(res);
+    if (!runContract.supported) {
+      send(res, 404, { error: { code: "not_found", message: "unknown endpoint" } });
+      return true;
+    }
+    handleRunDetail(res, decodeURIComponent(path.slice("/runs/".length)), url);
     return true;
   }
   if (path === "/directories" && method === "GET") {

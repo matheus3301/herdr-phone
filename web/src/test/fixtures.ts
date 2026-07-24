@@ -1,6 +1,22 @@
 import { store } from "@/lib/store";
 import type { AppState } from "@/lib/store";
-import type { Agent, Capabilities, Pane, SessionInfo, Snapshot, Tab, Workspace, Worktree, WirePairResponse, WireSnapshotEnvelope } from "@/lib/types";
+import { runSource } from "@/lib/run-source";
+import type {
+  Agent,
+  Capabilities,
+  Pane,
+  RunContract,
+  SessionInfo,
+  Snapshot,
+  Tab,
+  Workspace,
+  Worktree,
+  WirePairResponse,
+  WireRunCapabilities,
+  WireRunsResponse,
+  WireRunSummary,
+  WireSnapshotEnvelope,
+} from "@/lib/types";
 
 /** A view-model snapshot for component/store tests. */
 export function makeSnapshot(overrides: Partial<Snapshot> = {}): Snapshot {
@@ -61,9 +77,105 @@ export function makeSessionResponse(overrides: Partial<WirePairResponse> = {}): 
   return makePairResponse(overrides);
 }
 
+/**
+ * The run contract as a relay that ships it advertises: authoritative about
+ * identity and status, explicitly false about every semantic capability.
+ */
+export function makeRunContract(overrides: Partial<RunContract> = {}): RunContract {
+  return {
+    contractVersion: 1,
+    supported: true,
+    structuredMessages: false,
+    structuredToolCalls: false,
+    structuredInteractions: false,
+    structuredDiffs: false,
+    structuredTests: false,
+    structuredPlans: false,
+    observedTerminalOutput: true,
+    partTypes: ["observed_terminal_output"],
+    outputSources: ["recent", "recent-unwrapped", "visible"],
+    maxOutputBytes: 65536,
+    maxOutputLines: 400,
+    maxRuns: 200,
+    ...overrides,
+  };
+}
+
+/** The same document on the wire (internal/server/runs.go runCapabilities). */
+export function makeWireRunCapabilities(overrides: Partial<WireRunCapabilities> = {}): WireRunCapabilities {
+  return {
+    contract_version: 1,
+    supported: true,
+    structured_messages: false,
+    structured_tool_calls: false,
+    structured_interactions: false,
+    structured_diffs: false,
+    structured_tests: false,
+    structured_plans: false,
+    observed_terminal_output: true,
+    part_types: ["observed_terminal_output"],
+    output_sources: ["recent", "recent-unwrapped", "visible"],
+    max_output_bytes: 65536,
+    max_output_lines: 400,
+    max_runs: 200,
+    ...overrides,
+  };
+}
+
+/** One structured run, matching the fields internal/server/runs.go emits. */
+export function makeWireRun(overrides: Partial<WireRunSummary> = {}): WireRunSummary {
+  return {
+    run_id: "w1:p1@3",
+    pane_id: "w1:p1",
+    pane_generation: 3,
+    agent_incarnation: "0123456789abcdef",
+    workspace_id: "w1",
+    workspace_label: "space-api",
+    tab_id: "w1:t1",
+    tab_label: "auth-refactor",
+    terminal_id: "t1",
+    agent_kind: "claude",
+    agent_name: "claude",
+    display_agent: "claude",
+    title: "Approve this command?",
+    status: "blocked",
+    interactive_ready: true,
+    launch_pending: false,
+    focused: true,
+    cwd: "/Users/dev/code/space-api",
+    foreground_cwd: "/Users/dev/code/space-api",
+    worktree: {
+      repo_name: "space-api",
+      repo_root: "/Users/dev/code/space-api",
+      checkout_path: "/Users/dev/code/space-api",
+      is_linked_worktree: true,
+    },
+    revision: 3,
+    state_change_seq: 30,
+    ...overrides,
+  };
+}
+
+export function makeWireRunsResponse(overrides: Partial<WireRunsResponse> = {}): WireRunsResponse {
+  return {
+    contract_version: 1,
+    capabilities: makeWireRunCapabilities(),
+    snapshot_hash: "h1",
+    runs: [makeWireRun()],
+    truncated: false,
+    ...overrides,
+  };
+}
+
+/**
+ * Capabilities for a relay WITHOUT the structured run contract — the fallback
+ * posture. `makeCapabilities({ runs: makeRunContract() })` opts into production
+ * run mode.
+ */
 export function makeCapabilities(overrides: Partial<Capabilities> = {}): Capabilities {
   return {
     operations: ["workspace.create", "tab.create", "pane.split", "workspace.close", "pane.close", "worktree.remove", "worktree.remove_force", "agent.prompt", "agent.start"],
+    runs: null,
     agentKinds: ["claude", "codex", "opencode"],
     agentKindsAvailable: true,
     mode: "quick",
@@ -119,7 +231,17 @@ export function makeWireEnvelope(overrides: Partial<WireSnapshotEnvelope> = {}):
   };
 }
 
-/** Directly seed the singleton store for component tests. */
-export function seedStore(patch: Partial<AppState>): void {
+/** Patch the singleton store in place, exactly as a live update would. */
+export function updateStore(patch: Partial<AppState>): void {
   (store as unknown as { set: (p: Partial<AppState>) => void }).set(patch);
+}
+
+/**
+ * Seed the singleton store for a test, dropping any run list a previous test
+ * left behind so run mode is decided fresh from `capabilities`. Use
+ * `updateStore` for a mid-test change, which must reconcile rather than reset.
+ */
+export function seedStore(patch: Partial<AppState>): void {
+  runSource.reset();
+  updateStore(patch);
 }

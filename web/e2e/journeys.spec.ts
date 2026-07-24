@@ -1,5 +1,17 @@
 import { test, expect } from "@playwright/test";
-import { failNext, goTo, inbox, instructions, main, openRun, openWorkspace, pair, replacePane } from "./helpers";
+import {
+  failNext,
+  failNextRunRead,
+  goTo,
+  inbox,
+  instructions,
+  main,
+  openRun,
+  openWorkspace,
+  pair,
+  replacePane,
+  setRunContract,
+} from "./helpers";
 
 test.describe("Agents inbox", () => {
   test("pair, land in the inbox, and open an existing run", async ({ page }) => {
@@ -210,6 +222,162 @@ test.describe("Run detail", () => {
     });
     expect(divergent.status()).toBe(400);
     expect(await divergent.json()).toMatchObject({ error: { code: "bad_request" } });
+  });
+});
+
+test.describe("Structured run contract", () => {
+  test("production run mode: the inbox and the run detail come from the run routes", async ({ page }) => {
+    const requests: string[] = [];
+    page.on("request", (request) => {
+      const url = new URL(request.url());
+      if (url.pathname.startsWith("/api/v1/runs") || url.pathname.includes("/read")) requests.push(url.pathname + url.search);
+    });
+
+    await pair(page);
+    await expect.poll(() => requests.some((r) => r.startsWith("/api/v1/runs"))).toBe(true);
+
+    // The row addresses the run by the relay's authoritative id.
+    const row = inbox(page).getByRole("link", { name: /\bclaude\b/ }).first();
+    await expect(row).toHaveAttribute("href", "/runs/w1%3Ap1%403");
+    await openRun(page, "claude");
+
+    // The detail read is guarded by the mandatory generation, and the legacy
+    // pane read is not used at all.
+    await expect
+      .poll(() => requests.find((r) => r.startsWith("/api/v1/runs/w1%3Ap1")))
+      .toContain("expected_generation=3");
+    expect(requests.some((r) => r.includes("/panes/"))).toBe(false);
+
+    // Terminal output is labelled as terminal output, and nothing claims to be
+    // an agent message, a tool call, an approval, a diff, or a test result.
+    await expect(main(page).getByText(/recent terminal output/i)).toBeVisible();
+    await expect(main(page).getByText(/not the agent's own messages/i)).toBeVisible();
+    await expect(main(page).getByText(/claude --resume/)).toBeVisible();
+    await expect(main(page).getByRole("heading", { name: /assistant|conversation|tool calls|diff|test results/i })).toHaveCount(0);
+  });
+
+  test("run content is never cached", async ({ page }) => {
+    await pair(page);
+    const list = await page.request.get("/api/v1/runs");
+    expect(list.headers()["cache-control"]).toBe("no-store");
+    const detail = await page.request.get("/api/v1/runs/w1%3Ap1?expected_generation=3");
+    expect(detail.headers()["cache-control"]).toBe("no-store");
+  });
+
+  test("the relay refuses a run read whose generation is absent, zero, or stale", async ({ page }) => {
+    await pair(page);
+
+    const missing = await page.request.get("/api/v1/runs/w1%3Ap1");
+    expect(missing.status()).toBe(400);
+    expect(await missing.json()).toMatchObject({ error: { code: "generation_stale" } });
+
+    const zero = await page.request.get("/api/v1/runs/w1%3Ap1?expected_generation=0");
+    expect(zero.status()).toBe(400);
+
+    const unparseable = await page.request.get("/api/v1/runs/w1%3Ap1?expected_generation=later");
+    expect(unparseable.status()).toBe(400);
+
+    const stale = await page.request.get("/api/v1/runs/w1%3Ap1?expected_generation=1");
+    expect(stale.status()).toBe(409);
+    expect(await stale.json()).toMatchObject({ error: { code: "generation_stale" } });
+
+    // A live pane with no agent is not a run.
+    const shell = await page.request.get("/api/v1/runs/w1%3Ap2?expected_generation=1");
+    expect(shell.status()).toBe(404);
+    expect(await shell.json()).toMatchObject({ error: { code: "run_unavailable" } });
+
+    // A pane that is gone is a generation failure, not a missing route.
+    const gone = await page.request.get("/api/v1/runs/nope?expected_generation=1");
+    expect(gone.status()).toBe(409);
+  });
+
+  test("a run read failure is reported with a static message", async ({ page }) => {
+    await pair(page);
+    await failNextRunRead(page, { status: 502, code: "run_read_failed", message: "run output unavailable" });
+    await openRun(page, "claude");
+
+    await expect(main(page).getByText(/herdr could not read this pane/i)).toBeVisible();
+    await expect(main(page).getByRole("link", { name: /open console/i }).first()).toBeVisible();
+  });
+
+  test("a run invalidates when its pane generation moves on, and is never rebound", async ({ page }) => {
+    await pair(page);
+    await openRun(page, "claude");
+    await replacePane(page, "w1:p1");
+
+    await expect(page.getByRole("heading", { level: 1, name: /pane was replaced|agent has ended/i })).toBeVisible({
+      timeout: 20_000,
+    });
+    await expect(main(page).getByText(/generation you were on/i)).toBeVisible();
+    // The frozen run still reports the incarnation it was opened at.
+    await expect(main(page).getByText("w1:p1")).toBeVisible();
+  });
+
+  test("the inbox says when the relay truncated the list", async ({ page }) => {
+    await pair(page);
+    await setRunContract(page, { max_runs: 2 });
+
+    await expect(inbox(page).getByText(/returned only the first 2 runs/i)).toBeVisible({ timeout: 20_000 });
+    await expect(inbox(page).getByText(/some runs are not listed here/i)).toBeVisible();
+  });
+
+  test("observed output truncation is reported, not silently dropped", async ({ page }) => {
+    await pair(page);
+    // Pad the pane past the relay's byte bound so the tail is kept and flagged.
+    await setRunContract(page, { output_padding: 80_000 });
+    await openRun(page, "claude");
+
+    await expect(main(page).getByText(/older output was dropped/i)).toBeVisible({ timeout: 20_000 });
+  });
+});
+
+test.describe("Old-relay fallback", () => {
+  test("a relay without the run contract still lists and opens runs", async ({ page }) => {
+    await page.request.post("/api/v1/__reset");
+    await setRunContract(page, { supported: false });
+
+    const runRoutes: string[] = [];
+    const paneReads: string[] = [];
+    page.on("request", (request) => {
+      const path = new URL(request.url()).pathname;
+      if (path.startsWith("/api/v1/runs")) runRoutes.push(path);
+      if (path.includes("/api/v1/panes/")) paneReads.push(path);
+    });
+
+    await pair(page, { reset: false });
+
+    // Internal ids, and no run-route traffic at all: the UI fails closed on the
+    // capability document rather than probing a route that may not exist.
+    const row = inbox(page).getByRole("link", { name: /\bclaude\b/ }).first();
+    await expect(row).toHaveAttribute("href", "/runs/w1%3Ap1~g3");
+    await openRun(page, "claude");
+
+    await expect(main(page).getByText(/recent terminal output/i)).toBeVisible();
+    await expect(main(page).getByText(/not a transcript/i)).toBeVisible();
+    await expect(main(page).getByText(/claude --resume/)).toBeVisible();
+    await expect.poll(() => paneReads.length).toBeGreaterThan(0);
+    expect(runRoutes).toEqual([]);
+  });
+
+  test("a fallback run still sends the canonical pane id and generation", async ({ page }) => {
+    await page.request.post("/api/v1/__reset");
+    await setRunContract(page, { supported: false });
+    await pair(page, { reset: false });
+    await openRun(page, "claude");
+
+    const sent: Array<{ params: Record<string, unknown>; expected_generation?: number }> = [];
+    page.on("request", (request) => {
+      if (!request.url().includes("/api/v1/mutations")) return;
+      sent.push(JSON.parse(request.postData() ?? "{}"));
+    });
+
+    await page.getByLabel("Instruction for claude").fill("status?");
+    await page.getByRole("button", { name: "Send instruction" }).click();
+    await expect(instructions(page).getByText("Delivered")).toBeVisible();
+
+    expect(sent[0].params.pane_id).toBe("w1:p1");
+    expect(sent[0].params).not.toHaveProperty("target");
+    expect(sent[0].expected_generation).toBe(3);
   });
 });
 

@@ -21,12 +21,12 @@ import {
 import { useAppState } from "@/hooks/use-app-store";
 import { useMutations } from "@/hooks/use-mutations";
 import { useNow } from "@/hooks/use-now";
-import { useRunAdapter, useRunState, useRuns } from "@/hooks/use-runs";
+import { useRunAdapter, useRunList, useRunState } from "@/hooks/use-runs";
 import { useRouteTitle } from "@/hooks/use-route-title";
 import { useVisualViewport } from "@/hooks/use-visual-viewport";
 import { classifySend } from "@/lib/run-adapter";
 import { runStore } from "@/lib/run-store";
-import { explainMissingRun, findRun, parseRunId, runStatusDescription, type Run } from "@/lib/run";
+import { explainMissingRun, findRun, runRef, runStatusDescription, type Run, type RunKey } from "@/lib/run";
 import { CONNECTION_MESSAGES } from "@/lib/connection";
 import { checkPaneTarget } from "@/lib/pane-ops";
 
@@ -102,13 +102,22 @@ function RunHeader({ run, onFocusAgent }: { run: Run; onFocusAgent: () => void }
   );
 }
 
-/** A run whose pane generation moved on. Frozen, never silently rebound. */
-function InvalidRun({ runId }: { runId: string }) {
-  const runs = useRuns();
+/**
+ * A run whose pane generation or agent incarnation moved on. Frozen, never
+ * silently rebound: the operator is shown what happened and offered the new
+ * occupant as a deliberate choice.
+ */
+function InvalidRun({ identity }: { identity: RunKey | null }) {
+  const { runs } = useRunList();
   const { snapshot } = useAppState();
   const heading = useRouteTitle("Run unavailable");
-  const invalidation = useMemo(() => explainMissingRun(runs, snapshot, runId), [runs, snapshot, runId]);
-  const key = parseRunId(runId);
+  const paneId = identity?.paneId;
+  const generation = identity?.generation;
+  const invalidation = useMemo(
+    () => explainMissingRun(runs, snapshot, paneId ? { paneId, generation: generation ?? 0 } : null),
+    [runs, snapshot, paneId, generation],
+  );
+  const key = identity;
 
   const message =
     invalidation?.kind === "replaced" ? CONNECTION_MESSAGES["pane-replaced"] : CONNECTION_MESSAGES["agent-ended"];
@@ -121,7 +130,7 @@ function InvalidRun({ runId }: { runId: string }) {
       <p className="mt-1 max-w-prose text-body text-muted-ink">{message.detail}</p>
       <dl className="tabular mt-4 grid grid-cols-[auto_1fr] gap-x-3 gap-y-1">
         <dt className="text-faint-ink">Pane</dt>
-        <dd className="text-mist">{key?.paneId ?? runId}</dd>
+        <dd className="text-mist">{key?.paneId ?? "unknown"}</dd>
         <dt className="text-faint-ink">Generation you were on</dt>
         <dd className="text-mist">{key?.generation ?? "unknown"}</dd>
         {invalidation?.kind === "generation-changed" && (
@@ -154,14 +163,49 @@ function InvalidRun({ runId }: { runId: string }) {
 
 export function RunRoute() {
   const { runId = "" } = useParams();
-  const runs = useRuns();
+  const { runs, loading } = useRunList();
   const run = useMemo(() => findRun(runs, runId), [runs, runId]);
 
-  if (!run) return <InvalidRun runId={runId} />;
-  return <RunDetail key={run.id} run={run} />;
+  // The relay's run id is opaque, so the execution identity a frozen run should
+  // report comes from the last run this route actually resolved — never from
+  // parsing the id. The fallback's internal id is parsed only when there is no
+  // resolved run to remember.
+  const [remembered, setRemembered] = useState<RunKey | null>(null);
+  const paneId = run?.paneId;
+  const generation = run?.generation;
+  useEffect(() => {
+    if (paneId && generation !== undefined) setRemembered({ paneId, generation });
+  }, [paneId, generation]);
+  const identity = run ? { paneId: run.paneId, generation: run.generation } : runRef(runId, null) ?? remembered;
+
+  // A run the relay reported as invalid mid-read is frozen even while it is
+  // still listed: its pane now belongs to a different incarnation.
+  const [invalidated, setInvalidated] = useState<string | null>(null);
+  const onInvalidated = useCallback(() => setInvalidated(run?.id ?? runId), [run?.id, runId]);
+
+  if (!run) {
+    // The structured list is still loading: say so rather than claiming the run
+    // is gone.
+    if (loading) return <RunLoading />;
+    return <InvalidRun identity={identity} />;
+  }
+  if (invalidated === run.id) return <InvalidRun identity={identity} />;
+  return <RunDetail key={run.id} run={run} onInvalidated={onInvalidated} />;
 }
 
-function RunDetail({ run }: { run: Run }) {
+function RunLoading() {
+  const heading = useRouteTitle("Loading run");
+  return (
+    <div className="flex min-h-0 flex-1 flex-col px-4 py-6">
+      <h1 ref={heading} tabIndex={-1} className="text-prose font-semibold text-mist">
+        Loading this run…
+      </h1>
+      <p className="mt-1 text-body text-muted-ink">Reading the run list from the relay.</p>
+    </div>
+  );
+}
+
+function RunDetail({ run, onInvalidated }: { run: Run; onInvalidated: () => void }) {
   const state = useRunState(run.id);
   const adapter = useRunAdapter();
   const { runPane, pending } = useMutations();
@@ -295,7 +339,7 @@ function RunDetail({ run }: { run: Run }) {
               )}
             </section>
 
-            <TerminalTail run={run} now={now} />
+            <TerminalTail run={run} now={now} onInvalidated={onInvalidated} />
           </div>
         </div>
 

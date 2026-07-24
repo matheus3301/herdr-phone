@@ -6,12 +6,16 @@ import {
   findRun,
   formatRunId,
   groupRuns,
+  normalizeRunStatus,
   parseRunId,
+  runFromWire,
+  runRef,
   runStatusLabel,
+  runsFromWire,
   RUN_SECTIONS,
   SECTION_TITLE,
 } from "./run";
-import { makeSnapshot } from "@/test/fixtures";
+import { makeSnapshot, makeWireRun } from "@/test/fixtures";
 
 describe("run identity", () => {
   it("round-trips a pane id and generation", () => {
@@ -101,6 +105,60 @@ describe("inbox sections", () => {
   });
 });
 
+describe("runs from the structured contract", () => {
+  const snapshot = makeSnapshot();
+
+  it("takes the relay's opaque run id as authoritative and never derives one", () => {
+    const run = runFromWire(makeWireRun({ run_id: "opaque-handle-7" }), snapshot);
+    expect(run.id).toBe("opaque-handle-7");
+    expect(run.origin).toBe("relay");
+    // The internal encoding is not what a relay run is addressed by.
+    expect(run.id).not.toBe(formatRunId({ paneId: run.paneId, generation: run.generation }));
+  });
+
+  it("carries the pane, generation, and incarnation the relay reported", () => {
+    const run = runFromWire(makeWireRun(), snapshot);
+    expect(run.paneId).toBe("w1:p1");
+    expect(run.generation).toBe(3);
+    expect(run.incarnation).toBe("0123456789abcdef");
+  });
+
+  it("reports an unrecognized upstream status as unknown, never as completion", () => {
+    expect(normalizeRunStatus("finished")).toBe("unknown");
+    expect(normalizeRunStatus(undefined)).toBe("unknown");
+    expect(normalizeRunStatus("done")).toBe("done");
+    const run = runFromWire(makeWireRun({ status: "finished" }), snapshot);
+    expect(run.status).toBe("unknown");
+    expect(run.section).toBe("unknown");
+  });
+
+  it("keeps the relay's context and fills the worktree branch from the snapshot", () => {
+    const run = runFromWire(makeWireRun(), snapshot);
+    expect(run.workspaceLabel).toBe("space-api");
+    expect(run.tabLabel).toBe("auth-refactor");
+    expect(run.worktreeBranch).toBe("auth-refactor");
+    expect(run.worktreePath).toBe("/Users/dev/code/space-api");
+  });
+
+  it("falls back to ids when the relay omits optional labels", () => {
+    const run = runFromWire(
+      makeWireRun({ workspace_label: undefined, tab_label: undefined, agent_name: undefined, display_agent: undefined }),
+      null,
+    );
+    expect(run.workspaceLabel).toBe("w1");
+    expect(run.tabLabel).toBe("w1:t1");
+    expect(run.agentName).toBe("claude");
+  });
+
+  it("preserves the relay's order", () => {
+    const runs = runsFromWire(
+      [makeWireRun({ run_id: "b@1", pane_id: "w1:pb" }), makeWireRun({ run_id: "a@1", pane_id: "w1:pa" })],
+      snapshot,
+    );
+    expect(runs.map((r) => r.id)).toEqual(["b@1", "a@1"]);
+  });
+});
+
 describe("run invalidation", () => {
   const snapshot = makeSnapshot();
   const runs = buildRuns(snapshot);
@@ -110,22 +168,37 @@ describe("run invalidation", () => {
     expect(findRun(runs, "w1:p1~g2")).toBeNull();
   });
 
+  it("resolves a relay run by its opaque id, and by a pane alias only on an exact generation", () => {
+    const relayRuns = runsFromWire([makeWireRun({ run_id: "w1:p1@3" })], snapshot);
+    expect(findRun(relayRuns, "w1:p1@3")?.paneId).toBe("w1:p1");
+    // A link built from a pane resolves to the current occupant…
+    expect(findRun(relayRuns, "w1:p1~g3")?.id).toBe("w1:p1@3");
+    // …and to nothing at all once the generation has moved on.
+    expect(findRun(relayRuns, "w1:p1~g2")).toBeNull();
+  });
+
+  it("remembers the resolved run's identity rather than parsing an opaque id", () => {
+    const relayRun = runsFromWire([makeWireRun({ run_id: "opaque" })], snapshot)[0];
+    expect(runRef("opaque", relayRun)).toEqual({ paneId: "w1:p1", generation: 3 });
+    expect(runRef("opaque", null)).toBeNull();
+    expect(runRef("w1:p1~g2", null)).toEqual({ paneId: "w1:p1", generation: 2 });
+  });
+
   it("reports a replaced pane and offers its current occupant", () => {
-    const result = explainMissingRun(runs, snapshot, "w1:p1~g2");
+    const result = explainMissingRun(runs, snapshot, { paneId: "w1:p1", generation: 2 });
     expect(result).toMatchObject({ kind: "replaced", paneId: "w1:p1" });
     expect(result && "successor" in result && result.successor.id).toBe("w1:p1~g3");
   });
 
   it("reports a generation change when the pane survives without an agent", () => {
     const withoutAgents = { ...snapshot, agents: [] };
-    expect(explainMissingRun(buildRuns(withoutAgents), withoutAgents, "w1:p1~g2")).toMatchObject({
-      kind: "generation-changed",
-      generation: 3,
-    });
+    expect(
+      explainMissingRun(buildRuns(withoutAgents), withoutAgents, { paneId: "w1:p1", generation: 2 }),
+    ).toMatchObject({ kind: "generation-changed", generation: 3 });
   });
 
   it("reports a vanished pane", () => {
     const gone = { ...snapshot, agents: [], panes: [] };
-    expect(explainMissingRun([], gone, "w1:p1~g3")).toMatchObject({ kind: "gone" });
+    expect(explainMissingRun([], gone, { paneId: "w1:p1", generation: 3 })).toMatchObject({ kind: "gone" });
   });
 });

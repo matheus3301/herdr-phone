@@ -1,6 +1,6 @@
 import { describe, it, expect } from "vitest";
-import { normalizeSnapshot, normalizeCapabilities, sessionFromResponse } from "./normalize";
-import { makeWireEnvelope, makePairResponse } from "@/test/fixtures";
+import { normalizeSnapshot, normalizeCapabilities, normalizeRunContract, sessionFromResponse } from "./normalize";
+import { makeWireEnvelope, makePairResponse, makeWireRunCapabilities } from "@/test/fixtures";
 import type { WireCapabilities } from "./types";
 
 describe("normalizeSnapshot", () => {
@@ -71,6 +71,44 @@ describe("normalizeCapabilities", () => {
     const c = normalizeCapabilities({ ...wire, capabilities: { herdr_version: "0.7.5", herdr_protocol: 17, live_handoff: true, agent_kinds_error: "unavailable" } }, "0.1.0");
     expect(c.agentKindsAvailable).toBe(false);
     expect(c.agentKinds).toEqual([]);
+  });
+
+  it("reports no run contract for a relay that does not advertise one", () => {
+    expect(normalizeCapabilities(wire, "0.1.0").runs).toBeNull();
+  });
+
+  it("carries the advertised run contract through, flags and bounds intact", () => {
+    const c = normalizeCapabilities({ ...wire, runs: makeWireRunCapabilities() }, "0.1.0");
+    expect(c.runs).toMatchObject({
+      contractVersion: 1,
+      supported: true,
+      observedTerminalOutput: true,
+      structuredMessages: false,
+      structuredToolCalls: false,
+      structuredInteractions: false,
+      structuredDiffs: false,
+      structuredTests: false,
+      structuredPlans: false,
+      maxOutputLines: 400,
+      maxOutputBytes: 65536,
+      maxRuns: 200,
+    });
+    expect(c.runs?.partTypes).toEqual(["observed_terminal_output"]);
+  });
+});
+
+describe("normalizeRunContract fails closed", () => {
+  it("rejects an absent document", () => {
+    expect(normalizeRunContract(undefined)).toBeNull();
+    expect(normalizeRunContract(null)).toBeNull();
+  });
+
+  it("rejects a contract version this build does not implement", () => {
+    expect(normalizeRunContract(makeWireRunCapabilities({ contract_version: 2 }))).toBeNull();
+  });
+
+  it("rejects a relay that advertises the shape but not support", () => {
+    expect(normalizeRunContract(makeWireRunCapabilities({ supported: false }))).toBeNull();
   });
 });
 

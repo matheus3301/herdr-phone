@@ -4,11 +4,20 @@ import userEvent from "@testing-library/user-event";
 import { MemoryRouter } from "react-router-dom";
 import { RunInbox } from "./run-inbox";
 import { store } from "@/lib/store";
-import { makeCapabilities, makeSnapshot, seedStore } from "@/test/fixtures";
-import type { Snapshot } from "@/lib/types";
+import * as api from "@/lib/api";
+import { runSource } from "@/lib/run-source";
+import {
+  makeCapabilities,
+  makeRunContract,
+  makeSnapshot,
+  makeWireRun,
+  makeWireRunsResponse,
+  seedStore,
+} from "@/test/fixtures";
+import type { Capabilities, Snapshot } from "@/lib/types";
 
-function mount(snapshot: Snapshot | null = makeSnapshot()) {
-  seedStore({ ready: true, snapshot, capabilities: makeCapabilities(), connection: "live" });
+function mount(snapshot: Snapshot | null = makeSnapshot(), capabilities: Capabilities = makeCapabilities()) {
+  seedStore({ ready: true, snapshot, capabilities, connection: "live" });
   return render(
     <MemoryRouter>
       <RunInbox />
@@ -16,10 +25,19 @@ function mount(snapshot: Snapshot | null = makeSnapshot()) {
   );
 }
 
+/** Mount against a relay that advertises the structured run contract. */
+function mountWithContract(snapshot: Snapshot | null = makeSnapshot()) {
+  return mount(snapshot, makeCapabilities({ runs: makeRunContract() }));
+}
+
 beforeEach(() => {
+  runSource.reset();
   vi.spyOn(store, "runMutation").mockResolvedValue({ request_id: "r", accepted: true, result: {} });
 });
-afterEach(() => vi.restoreAllMocks());
+afterEach(() => {
+  runSource.reset();
+  vi.restoreAllMocks();
+});
 
 describe("RunInbox — attention-first sections", () => {
   it("lists sections in urgency order", () => {
@@ -63,6 +81,43 @@ describe("RunInbox — attention-first sections", () => {
     expect(link).toHaveAttribute("href", "/runs/w1%3Ap1~g3");
     await userEvent.click(link);
     expect(store.runMutation).not.toHaveBeenCalled();
+  });
+});
+
+describe("RunInbox — production run mode", () => {
+  it("lists the relay's runs and links them by their authoritative ids", async () => {
+    const spy = vi.spyOn(api, "getRuns").mockResolvedValue(makeWireRunsResponse());
+    mountWithContract();
+
+    const link = await screen.findByRole("link", { name: /claude/ });
+    expect(link).toHaveAttribute("href", "/runs/w1%3Ap1%403");
+    expect(spy).toHaveBeenCalled();
+  });
+
+  it("honours the relay's list truncation instead of reading a short list as complete", async () => {
+    vi.spyOn(api, "getRuns").mockResolvedValue(makeWireRunsResponse({ truncated: true }));
+    mountWithContract();
+
+    expect(await screen.findByText(/returned only the first 200 runs/i)).toBeInTheDocument();
+    expect(screen.getByText(/some runs are not listed here/i)).toBeInTheDocument();
+  });
+
+  it("does not show a truncation notice for a complete list", async () => {
+    vi.spyOn(api, "getRuns").mockResolvedValue(makeWireRunsResponse());
+    mountWithContract();
+    await screen.findByRole("link", { name: /claude/ });
+    expect(screen.queryByText(/some runs are not listed here/i)).toBeNull();
+  });
+
+  it("keeps an unrecognised relay status out of idle and out of any completion state", async () => {
+    vi.spyOn(api, "getRuns").mockResolvedValue(
+      makeWireRunsResponse({ runs: [makeWireRun({ status: "reticulating" })] }),
+    );
+    mountWithContract();
+
+    const unknown = await screen.findByRole("heading", { level: 2, name: /status unknown/i });
+    expect(within(unknown.closest("section")!).getAllByText("claude").length).toBeGreaterThan(0);
+    expect(screen.queryByRole("heading", { level: 2, name: /^idle/i })).toBeNull();
   });
 });
 

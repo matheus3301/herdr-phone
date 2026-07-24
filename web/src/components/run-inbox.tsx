@@ -3,7 +3,7 @@ import { Link, NavLink } from "react-router-dom";
 import { GitBranch, Plus } from "lucide-react";
 import { StatusPill } from "@/components/status-pill";
 import { Button } from "@/components/ui/button";
-import { useRunGroups, useRuns } from "@/hooks/use-runs";
+import { useRunGroups, useRunList } from "@/hooks/use-runs";
 import { useNow } from "@/hooks/use-now";
 import { runStore } from "@/lib/run-store";
 import { attentionCount, type Run, type RunGroup } from "@/lib/run";
@@ -119,7 +119,7 @@ function RunRow({ run, now }: { run: Run; now: number }) {
  * `agent.focus`.
  */
 export function RunInbox() {
-  const runs = useRuns();
+  const { runs, truncated, maxRuns, loading, error } = useRunList();
   const liveGroups = useRunGroups(runs);
   const { groups, handlers } = useSteadyGroups(liveGroups);
   const now = useNow(15_000);
@@ -159,8 +159,24 @@ export function RunInbox() {
         {announcement}
       </p>
 
+      {error && (
+        <p role="status" className="border-y border-seam bg-hull px-4 py-2 text-meta text-flare">
+          {error} Showing the last list this phone received.
+        </p>
+      )}
+
+      {/* The relay bounds the list. Saying so is the difference between "these
+          are all your runs" and "these are the first N of them". */}
+      {truncated && (
+        <p role="status" className="border-y border-seam bg-hull px-4 py-2 text-meta text-muted-ink">
+          The relay returned only the first {maxRuns > 0 ? maxRuns : total} runs. Some runs are not listed here.
+        </p>
+      )}
+
       <div className="min-h-0 flex-1 overflow-y-auto pb-6" {...handlers}>
-        {total === 0 ? (
+        {total === 0 && loading ? (
+          <p className="px-4 py-10 text-center text-body text-muted-ink">Loading runs…</p>
+        ) : total === 0 ? (
           <div className="px-4 py-10 text-center">
             <p className="text-body text-mist">No agents are running.</p>
             <p className="mt-1 text-meta text-muted-ink">
