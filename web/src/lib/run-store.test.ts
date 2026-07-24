@@ -1,5 +1,5 @@
 import { describe, it, expect, vi } from "vitest";
-import { RunStore } from "./run-store";
+import { observeRuns, RunStore } from "./run-store";
 import { buildRuns } from "./run";
 import { makeSnapshot } from "@/test/fixtures";
 
@@ -153,5 +153,73 @@ describe("RunStore — observed transitions", () => {
     expect(store.get(run.id).observed.length).toBeLessThanOrEqual(60);
     expect(store.lastSeenAt(run.id)).toBe(100_000);
     expect(store.lastSeenAt("never-seen")).toBeNull();
+  });
+});
+
+/**
+ * Review MEDIUM 3.
+ *
+ * `observe` inserts a partition on first sight and a run id is per pane
+ * *generation*, so a long supervising session accumulated one dead `RunState`
+ * per recycled pane — each holding up to 40 raw instruction texts and 60
+ * observed entries — and `forget()` had no production caller at all. Nothing
+ * reached disk, but retaining instruction content for runs the contract has
+ * already invalidated is exactly what freezing a run is supposed to end.
+ */
+describe("RunStore — partition lifetime", () => {
+  it("releases a partition once its run leaves the live list", () => {
+    const store = new RunStore();
+    const claude = runFor("claude");
+    const codex = runFor("codex");
+    observeRuns([claude, codex], store);
+    store.setDraft(claude.id, "an unsent instruction");
+    expect(store.size()).toBe(2);
+
+    // The pane behind `claude` is recycled: its run id is gone from the list.
+    observeRuns([codex], store);
+    expect(store.size()).toBe(1);
+    expect(store.get(codex.id).lastSeq).not.toBeNull();
+    // The dead partition's instruction content is not retained: reading the id
+    // again yields a blank partition, not the old draft.
+    expect(store.get(claude.id).draft).toBe("");
+  });
+
+  it("does not retain instruction text for an invalidated run", () => {
+    const store = new RunStore();
+    const claude = runFor("claude");
+    observeRuns([claude], store);
+    store.beginSend(claude.id, "deploy the thing");
+    expect(store.get(claude.id).instructions).toHaveLength(1);
+
+    observeRuns([], store);
+    expect(store.size()).toBe(0);
+  });
+
+  it("keeps a watched partition, so a frozen run on screen is not blanked", () => {
+    const store = new RunStore();
+    const claude = runFor("claude");
+    observeRuns([claude], store);
+    store.beginSend(claude.id, "still being read");
+
+    // The route is still mounted and subscribed: this is the frozen
+    // invalidated-run view, and clearing it out from under the reader would
+    // destroy the history they were sent there to look at.
+    const unsubscribe = store.subscribe(claude.id, () => {});
+    observeRuns([], store);
+    expect(store.get(claude.id).instructions).toHaveLength(1);
+
+    // Released as soon as they navigate away.
+    unsubscribe();
+    observeRuns([], store);
+    expect(store.size()).toBe(0);
+  });
+
+  it("prune reports how many partitions it dropped", () => {
+    const store = new RunStore();
+    store.setDraft("a", "x");
+    store.setDraft("b", "y");
+    store.setDraft("c", "z");
+    expect(store.prune(["b"])).toBe(2);
+    expect(store.size()).toBe(1);
   });
 });

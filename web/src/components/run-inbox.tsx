@@ -3,9 +3,8 @@ import { Link, NavLink } from "react-router-dom";
 import { GitBranch, Plus } from "lucide-react";
 import { StatusPill } from "@/components/status-pill";
 import { Button } from "@/components/ui/button";
-import { useRunGroups, useRunList } from "@/hooks/use-runs";
+import { useRunGroups, useRunList, useRunState } from "@/hooks/use-runs";
 import { useNow } from "@/hooks/use-now";
-import { runStore } from "@/lib/run-store";
 import { attentionCount, type Run, type RunGroup } from "@/lib/run";
 import { stabilizeGroups } from "@/lib/stable-order";
 import { seenLabel } from "@/lib/format";
@@ -66,7 +65,13 @@ function useSteadyGroups(groups: RunGroup[]): { groups: RunGroup[]; handlers: St
 }
 
 function RunRow({ run, now }: { run: Run; now: number }) {
-  const seen = seenLabel(runStore.lastSeenAt(run.id), now);
+  // Subscribed, not read bare: the partition this reads from is mutated by
+  // `observeRuns` during reconcile, so a plain method call in the render body
+  // would tear against a concurrent render and would only refresh when the
+  // unrelated `useNow` tick happened to fire.
+  const state = useRunState(run.id);
+  const observed = state.observed;
+  const seen = seenLabel(observed.length > 0 ? observed[observed.length - 1].at : null, now);
   const attention = run.section === "attention";
 
   return (
@@ -99,7 +104,7 @@ function RunRow({ run, now }: { run: Run; now: number }) {
             <StatusPill status={run.status} />
             <span className="tabular truncate text-faint-ink" title={run.cwd}>
               {run.workspaceLabel}
-              {run.worktreeBranch ? ` / ${run.worktreeBranch}` : ""}
+              {run.worktree && run.worktree.label !== run.workspaceLabel ? ` / ${run.worktree.label}` : ""}
             </span>
             {seen && <span className="tabular shrink-0 text-faint-ink">{seen}</span>}
           </span>
@@ -143,12 +148,15 @@ export function RunInbox() {
 
   return (
     <div className="flex min-h-0 flex-1 flex-col">
-      <div className="flex items-center gap-2 px-4 py-3">
+      {/* Wraps at 200% text zoom, where the heading, the count, and the action no
+          longer share a 320px row. Without this the action was pushed off-screen
+          with no horizontal scroll to reach it. */}
+      <div className="flex flex-wrap items-center gap-2 px-4 py-3">
         <h1 className="text-prose font-semibold text-mist" tabIndex={-1}>
           Agents
         </h1>
         <span className="tabular text-faint-ink">{total}</span>
-        <Button asChild variant="primary" size="sm" className="ml-auto">
+        <Button asChild variant="primary" size="sm" className="ml-auto shrink-0">
           <Link to="/runs/new">
             <Plus className="size-4" /> Start run
           </Link>

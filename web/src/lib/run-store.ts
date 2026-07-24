@@ -232,6 +232,39 @@ export class RunStore {
     const set = this.listeners.get(runId);
     if (set) for (const cb of set) cb();
   }
+
+  /**
+   * Drop every partition whose run is no longer live, keeping the ones still
+   * being watched.
+   *
+   * `observe` inserts a partition on first sight, and a run id is per pane
+   * *generation*, so a long supervising session accumulates one dead `RunState`
+   * per recycled pane — each holding up to 40 raw instruction texts and 60
+   * observed entries. Nothing reaches disk, but retaining instruction content for
+   * runs the contract has already invalidated is exactly what a frozen run is
+   * supposed to end.
+   *
+   * A partition with live subscribers is deliberately kept: that is the frozen
+   * invalidated-run view still on screen, and clearing it out from under the
+   * route would blank the history the operator is reading. It is released when
+   * they navigate away and the last subscriber unsubscribes.
+   */
+  prune(liveRunIds: Iterable<string>): number {
+    const live = new Set(liveRunIds);
+    let dropped = 0;
+    for (const runId of [...this.states.keys()]) {
+      if (live.has(runId)) continue;
+      if (this.listeners.has(runId)) continue;
+      this.states.delete(runId);
+      dropped++;
+    }
+    return dropped;
+  }
+
+  /** Test seam: how many partitions are currently held. */
+  size(): number {
+    return this.states.size;
+  }
 }
 
 export const runStore = new RunStore();
@@ -244,4 +277,8 @@ export const runStore = new RunStore();
  */
 export function observeRuns(runs: Run[], store: RunStore = runStore): void {
   for (const run of runs) store.observe(run);
+  // Fold and prune in one pass: every partition that is neither live nor being
+  // watched is released here, so the store tracks the run list instead of every
+  // run the session has ever seen.
+  store.prune(runs.map((run) => run.id));
 }
