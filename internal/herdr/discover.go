@@ -42,6 +42,7 @@ func (r ExecRunner) Run(ctx context.Context, name string, args []string) ([]byte
 		maxBytes = DefaultMaxCommandBytes
 	}
 	cmd := exec.CommandContext(ctx, name, args...)
+	prepareCommand(cmd)
 	// Explicitly no shell: CommandContext runs argv directly. Do not set a
 	// shell interpreter or pass a single command string.
 	var out, errb boundedBuffer

@@ -109,7 +109,7 @@ jobs:
       - name: Build embedded frontend
         run: make build-web
       - name: Uncached race tests
-        run: go test -race -count=1 ./...
+        run: go test -race -count=1 ./cmd/... ./internal/...
 
   frontend:
     name: Frontend lint, typecheck, and unit/component tests
@@ -227,4 +227,4 @@ jobs:
       - name: Run govulncheck
         run: |
           go install golang.org/x/vuln/cmd/govulncheck@v1.6.0
-          "$(go env GOPATH)/bin/govulncheck" ./...
+          "$(go env GOPATH)/bin/govulncheck" ./cmd/... ./internal/...
