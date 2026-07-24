@@ -52,7 +52,7 @@ func TestRunsListExactWire(t *testing.T) {
 	}
 	run, _ := runs[0].(map[string]any)
 	want := map[string]any{
-		"run_id":            "pane-1@7",
+		"run_id":            "pane-1@7#0123456789abcdef",
 		"pane_id":           "pane-1",
 		"pane_generation":   float64(7),
 		"agent_incarnation": "0123456789abcdef",
@@ -154,8 +154,29 @@ func TestRunDetailExactWire(t *testing.T) {
 	if p.Bytes != len("last visible output") || p.Truncated {
 		t.Errorf("part bytes = %d truncated = %v", p.Bytes, p.Truncated)
 	}
-	if p.Lines != defaultRunOutputLines {
-		t.Errorf("part lines = %d, want %d", p.Lines, defaultRunOutputLines)
+	// Review LOW 2: `lines` is what the response actually carries, not the bound
+	// that was requested. The fake pane renders one line, so reporting
+	// defaultRunOutputLines here would be a statement the UI repeats as fact.
+	if p.Lines != 1 {
+		t.Errorf("part lines = %d, want 1 (the lines actually returned)", p.Lines)
+	}
+}
+
+// The requested bound is clamped and is what the upstream read is asked for; the
+// reported line count is what came back. Both matter, and they are not the same
+// number.
+func TestRunOutputReportsReturnedLinesNotTheRequest(t *testing.T) {
+	t.Parallel()
+	h := newHarness(t)
+	h.state.setContent("pane-1", []byte("one\ntwo\nthree\n"))
+	resp := h.authedGET(apiPrefix + "/runs/pane-1?expected_generation=7&lines=200")
+	var got runResponse
+	decodeBody(t, resp, &got)
+	if got.Parts[0].Lines != 3 {
+		t.Fatalf("lines = %d, want 3", got.Parts[0].Lines)
+	}
+	if n := h.state.lastReadLines(); n != 200 {
+		t.Fatalf("upstream asked for %d lines, want 200", n)
 	}
 }
 
@@ -364,8 +385,13 @@ func TestRunOutputLinesClamped(t *testing.T) {
 	resp := h.authedGET(apiPrefix + "/runs/pane-1?expected_generation=7&lines=100000")
 	var got runResponse
 	decodeBody(t, resp, &got)
-	if got.Parts[0].Lines != 50 {
-		t.Fatalf("lines = %d, want clamped to 50", got.Parts[0].Lines)
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("status = %d", resp.StatusCode)
+	}
+	// The clamp applies to what the relay asks Herdr for. An unbounded request
+	// must never reach the upstream read.
+	if n := h.state.lastReadLines(); n != 50 {
+		t.Fatalf("upstream asked for %d lines, want clamped to 50", n)
 	}
 }
 

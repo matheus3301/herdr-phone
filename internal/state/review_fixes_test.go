@@ -16,7 +16,10 @@ func TestHashStableUnderReordering(t *testing.T) {
 		Version: "0.7.5", Protocol: 17,
 		FocusedWorkspaceID: "w1", FocusedTabID: "w1:t1", FocusedPaneID: "w1:p1",
 		Workspaces: []herdr.Workspace{
-			{WorkspaceID: "w1", Number: 1, Label: "a", AgentStatus: herdr.StatusIdle, ActiveTabID: "w1:t1"},
+			{WorkspaceID: "w1", Number: 1, Label: "a", AgentStatus: herdr.StatusIdle, ActiveTabID: "w1:t1",
+				Worktree: &herdr.WorkspaceWorktree{
+					RepoKey: "k1", RepoName: "a", RepoRoot: "/r/a", CheckoutPath: "/r/a", IsLinkedWorktree: true,
+				}},
 			{WorkspaceID: "w2", Number: 2, Label: "b", AgentStatus: herdr.StatusWorking, ActiveTabID: "w2:t1"},
 		},
 		Tabs: []herdr.Tab{
@@ -37,10 +40,6 @@ func TestHashStableUnderReordering(t *testing.T) {
 				Splits: []herdr.LayoutSplit{{ID: "s0"}, {ID: "s1"}}},
 			{WorkspaceID: "w2", TabID: "w2:t1", FocusedPaneID: "w2:p1"},
 		},
-		Worktrees: []herdr.Worktree{
-			{Path: "/r/a", Label: "a"},
-			{Path: "/r/b", Label: "b"},
-		},
 	}
 
 	reordered := &herdr.Snapshot{
@@ -50,7 +49,6 @@ func TestHashStableUnderReordering(t *testing.T) {
 		Tabs:       reverse(base.Tabs),
 		Panes:      reverse(base.Panes),
 		Agents:     reverse(base.Agents),
-		Worktrees:  reverse(base.Worktrees),
 		Layouts:    reverse(cloneLayoutsReversedInner(base.Layouts)),
 	}
 

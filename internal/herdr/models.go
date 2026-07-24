@@ -19,6 +19,12 @@ func (s AgentStatus) Active() bool {
 
 // Snapshot is the decoded session.snapshot payload: the complete topology and
 // agent bootstrap state. Unknown fields are tolerated and ignored.
+//
+// There is deliberately no top-level worktree array: `SessionSnapshot` in
+// `herdr api schema --json` (protocol 17, schema 1) declares none, so a field
+// for one would decode as empty forever and invite consumers to build on it.
+// Worktree context comes from Workspace.Worktree; the full worktree inventory
+// requires a separate `worktree.list` call.
 type Snapshot struct {
 	Version            string      `json:"version"`
 	Protocol           int         `json:"protocol"`
@@ -30,7 +36,6 @@ type Snapshot struct {
 	Panes              []Pane      `json:"panes"`
 	Layouts            []Layout    `json:"layouts"`
 	Agents             []Agent     `json:"agents"`
-	Worktrees          []Worktree  `json:"worktrees"`
 }
 
 // WorkspaceWorktree is the git checkout provenance Herdr reports for a

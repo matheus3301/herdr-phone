@@ -113,11 +113,13 @@ func TestStateAdapterRunsMapping(t *testing.T) {
 		t.Errorf("run generation = %d, engine generation = %d; the guard and the run must agree",
 			r.PaneGeneration, gen)
 	}
-	if r.PaneID != "w1:p1" || r.RunID != "w1:p1@1" {
-		t.Errorf("identity = %s / %s", r.PaneID, r.RunID)
-	}
 	if r.AgentIncarnation == "" {
 		t.Error("missing agent incarnation")
+	}
+	// The handle is opaque but stable: pane, generation, and occupant digest, so a
+	// recycled pane id restarting at generation 1 cannot reuse a dead run's id.
+	if want := "w1:p1@1#" + r.AgentIncarnation; r.PaneID != "w1:p1" || r.RunID != want {
+		t.Errorf("identity = %s / %s, want %s / %s", r.PaneID, r.RunID, "w1:p1", want)
 	}
 	if r.WorkspaceID != "w1" || r.WorkspaceLabel != "space-api" ||
 		r.TabID != "w1:t1" || r.TabLabel != "agents" || r.TerminalID != "term-1" {

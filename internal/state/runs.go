@@ -32,10 +32,14 @@ type RunWorktree struct {
 // it, with the topology context needed to describe it without flattening the
 // execution model.
 type Run struct {
-	// RunID is an opaque, stable handle for this run. It changes whenever the
-	// pane generation changes, which by construction is whenever the occupant
-	// changes. Callers must treat it as opaque and address operations by PaneID
-	// plus PaneGeneration.
+	// RunID is an opaque, stable handle for this run. It binds the pane id, the
+	// pane generation, AND the occupant digest, because a generation alone is not
+	// unique across pane recycling: updateGenerationsLocked drops a vanished
+	// pane's entry, so a pane id that later reappears restarts at generation 1.
+	// Folding the incarnation in means a new occupant can never inherit a dead
+	// run's identity — and anything keyed on it (a React key, a client-side run
+	// partition) can never inherit the dead run's content either. Callers must
+	// treat it as opaque and address operations by PaneID plus PaneGeneration.
 	RunID string
 	// PaneID is the canonical pane identifier every operation is keyed on.
 	PaneID string
@@ -165,7 +169,7 @@ func projectRuns(topo *herdr.Snapshot, gens map[string]uint64, occupants map[str
 			ForegroundCWD:    p.ForegroundCWD,
 			Revision:         p.Revision,
 		}
-		run.RunID = run.PaneID + "@" + strconv.FormatUint(gen, 10)
+		run.RunID = runID(run.PaneID, gen, run.AgentIncarnation)
 		if hasAgent {
 			// The agent list is authoritative for agent-scoped facts; the pane
 			// entry is authoritative for topology. Only fill from the agent where
@@ -217,6 +221,18 @@ func normalizeStatus(s herdr.AgentStatus) herdr.AgentStatus {
 	default:
 		return herdr.StatusUnknown
 	}
+}
+
+// runID builds the opaque run handle. Pane id and generation make it readable
+// in a log; the occupant digest makes it unique across pane recycling, which
+// generation alone is not. An empty incarnation (a pane with no occupant
+// fingerprint) simply omits that component rather than inventing one.
+func runID(paneID string, gen uint64, incarnation string) string {
+	id := paneID + "@" + strconv.FormatUint(gen, 10)
+	if incarnation == "" {
+		return id
+	}
+	return id + "#" + incarnation
 }
 
 // incarnationDigestLen is how much of the occupant digest is exposed. 16 hex

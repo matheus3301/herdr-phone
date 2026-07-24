@@ -55,11 +55,13 @@ func TestRunsProjectIdentityAndContext(t *testing.T) {
 	if r.PaneID != "w1:p1" || r.PaneGeneration != 1 {
 		t.Errorf("pane identity = %s@%d, want w1:p1@1", r.PaneID, r.PaneGeneration)
 	}
-	if r.RunID != "w1:p1@1" {
-		t.Errorf("run id = %q, want w1:p1@1", r.RunID)
-	}
 	if len(r.AgentIncarnation) != incarnationDigestLen {
 		t.Errorf("incarnation = %q, want %d hex chars", r.AgentIncarnation, incarnationDigestLen)
+	}
+	// The opaque handle binds pane, generation, AND incarnation, so a recycled
+	// pane id that restarts at generation 1 cannot reuse a dead run's identity.
+	if want := "w1:p1@1#" + r.AgentIncarnation; r.RunID != want {
+		t.Errorf("run id = %q, want %q", r.RunID, want)
 	}
 	if r.WorkspaceID != "w1" || r.WorkspaceLabel != "space-api" || r.TabID != "w1:t1" || r.TabLabel != "agents" {
 		t.Errorf("topology context = %+v", r)
@@ -110,6 +112,49 @@ func TestRunIdentityChangesWithGeneration(t *testing.T) {
 	}
 	if after.AgentIncarnation == before.AgentIncarnation {
 		t.Error("agent incarnation must change when the occupant changes")
+	}
+}
+
+// Review LOW 3: a pane id that vanishes and later reappears restarts at
+// generation 1, because updateGenerationsLocked drops the departed pane's entry.
+// The opaque run id must still differ, or anything keyed on it (a React key, a
+// client-side run partition holding instruction history) would let the new
+// occupant inherit the dead run's identity and content.
+func TestRunIDIsNotReusedAcrossPaneRecycling(t *testing.T) {
+	t.Parallel()
+	src := newSource(runSnapshot(herdr.StatusIdle))
+	e, _ := startEngine(t, Config{Source: src})
+	waitFor(t, "seq 1", func() bool { return e.Stats().Seq == 1 })
+	before := e.Runs().Runs[0]
+	if before.PaneGeneration != 1 {
+		t.Fatalf("generation = %d, want 1", before.PaneGeneration)
+	}
+
+	// The pane goes away entirely: its generation entry is dropped.
+	empty := runSnapshot(herdr.StatusIdle)
+	empty.Panes = nil
+	empty.Agents = nil
+	src.set(empty, nil)
+	e.Wake()
+	waitFor(t, "pane gone", func() bool { _, ok := e.Generation("w1:p1"); return !ok })
+
+	// The same pane id comes back with a different occupant, so its generation
+	// restarts at 1 while the incarnation differs.
+	next := runSnapshot(herdr.StatusIdle)
+	next.Panes[0].AgentSession = &herdr.AgentSession{Source: "herdr:claude", Agent: "claude", Kind: "id", Value: "s2"}
+	src.set(next, nil)
+	e.Wake()
+	waitFor(t, "pane back", func() bool { g, ok := e.Generation("w1:p1"); return ok && g == 1 })
+
+	after := e.Runs().Runs[0]
+	if after.PaneGeneration != 1 {
+		t.Fatalf("generation = %d, want 1 (recycled ids restart)", after.PaneGeneration)
+	}
+	if after.AgentIncarnation == before.AgentIncarnation {
+		t.Fatal("incarnation must differ for a different occupant")
+	}
+	if after.RunID == before.RunID {
+		t.Fatalf("run id %q reused across pane recycling", after.RunID)
 	}
 }
 

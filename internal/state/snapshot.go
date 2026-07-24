@@ -42,7 +42,6 @@ type hashProjection struct {
 	Panes      []projPane
 	Agents     []projAgent
 	Layouts    []herdr.Layout
-	Worktrees  []herdr.Worktree
 }
 
 type projWS struct {
@@ -109,10 +108,9 @@ func project(s *herdr.Snapshot) hashProjection {
 			InteractiveReady: a.InteractiveReady,
 		})
 	}
-	// Copy Layouts/Worktrees before sorting so the shared input snapshot (which
-	// becomes the broadcast Topology) is never mutated.
+	// Copy Layouts before sorting so the shared input snapshot (which becomes the
+	// broadcast Topology) is never mutated.
 	p.Layouts = canonicalLayouts(s.Layouts)
-	p.Worktrees = slices.Clone(s.Worktrees)
 
 	slices.SortFunc(p.Workspaces, func(a, b projWS) int { return cmp.Compare(a.ID, b.ID) })
 	slices.SortFunc(p.Tabs, func(a, b projTab) int { return cmp.Compare(a.ID, b.ID) })
@@ -124,7 +122,6 @@ func project(s *herdr.Snapshot) hashProjection {
 		return cmp.Compare(a.Agent, b.Agent)
 	})
 	slices.SortFunc(p.Layouts, func(a, b herdr.Layout) int { return cmp.Compare(a.TabID, b.TabID) })
-	slices.SortFunc(p.Worktrees, func(a, b herdr.Worktree) int { return cmp.Compare(a.Path, b.Path) })
 	return p
 }
 

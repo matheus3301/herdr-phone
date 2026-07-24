@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"net/http"
 	"strconv"
+	"strings"
 	"unicode/utf8"
 
 	"github.com/matheus3301/herdr-phone/internal/security"
@@ -169,9 +170,13 @@ type runsResponse struct {
 
 // observedOutputPart is the one typed part this build emits.
 type observedOutputPart struct {
-	Type      string `json:"type"`
-	Source    string `json:"source"`
-	Format    string `json:"format"`
+	Type   string `json:"type"`
+	Source string `json:"source"`
+	Format string `json:"format"`
+	// Lines is how many lines Text actually contains — not the bound that was
+	// requested. A client renders this as a statement of fact ("the last N lines
+	// this pane rendered"), so echoing the request back would make it a lie
+	// whenever the pane rendered fewer lines than were asked for.
 	Lines     int    `json:"lines"`
 	Bytes     int    `json:"bytes"`
 	Truncated bool   `json:"truncated"`
@@ -328,7 +333,7 @@ func (s *Server) handleRun(w http.ResponseWriter, r *http.Request) {
 			Type:      partObservedTerminalOutput,
 			Source:    source,
 			Format:    "text",
-			Lines:     lines,
+			Lines:     countLines(text),
 			Bytes:     len(text),
 			Truncated: truncatedOutput,
 			Text:      text,
@@ -409,6 +414,19 @@ func boundObservedText(s string, maxBytes int) (text string, truncated bool) {
 		tail = tail[1:]
 	}
 	return tail, true
+}
+
+// countLines reports how many lines s contains. Empty text is zero lines; a
+// trailing newline terminates the last line rather than starting a new one.
+func countLines(s string) int {
+	if s == "" {
+		return 0
+	}
+	n := strings.Count(s, "\n")
+	if !strings.HasSuffix(s, "\n") {
+		n++
+	}
+	return n
 }
 
 // truncateUTF8 cuts s to at most maxBytes without splitting a rune.

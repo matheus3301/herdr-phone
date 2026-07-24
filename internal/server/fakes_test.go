@@ -125,7 +125,17 @@ type fakeState struct {
 	caps    json.RawMessage
 	content map[string][]byte
 	readErr error
-	runs    []RunSummary
+	// readLines records the line bound the last ReadPane was asked for, so a test
+	// can assert the clamp that was actually applied upstream.
+	readLines int
+	runs      []RunSummary
+}
+
+// lastReadLines returns the line bound of the most recent ReadPane call.
+func (s *fakeState) lastReadLines() int {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.readLines
 }
 
 func newFakeState() *fakeState {
@@ -136,7 +146,7 @@ func newFakeState() *fakeState {
 		caps:    json.RawMessage(`{"agent_kinds":["claude","codex"]}`),
 		content: map[string][]byte{"pane-1": []byte("last visible output")},
 		runs: []RunSummary{{
-			RunID:            "pane-1@7",
+			RunID:            "pane-1@7#0123456789abcdef",
 			PaneID:           "pane-1",
 			PaneGeneration:   7,
 			AgentIncarnation: "0123456789abcdef",
@@ -234,9 +244,10 @@ func (s *fakeState) setReadErr(err error) {
 	s.mu.Unlock()
 }
 
-func (s *fakeState) ReadPane(_ context.Context, paneID, _ string, _ int) ([]byte, error) {
+func (s *fakeState) ReadPane(_ context.Context, paneID, _ string, lines int) ([]byte, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	s.readLines = lines
 	if s.readErr != nil {
 		return nil, s.readErr
 	}
