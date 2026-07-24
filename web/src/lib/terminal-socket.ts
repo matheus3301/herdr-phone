@@ -101,10 +101,14 @@ export class TerminalSocket {
   }
 
   private scheduleReconnect() {
-    // A reconnect starts a fresh, non-takeover controller: its takeover nonce was
-    // single-use, and the new controller reconstructs the screen from its first
-    // full frame. Any generation guard also drops (the pane may have changed).
-    this.connectOpts = {};
+    // A reconnect starts a fresh, non-takeover controller: the takeover nonce
+    // was single-use and the new controller reconstructs the screen from its
+    // first full frame. The generation guard is NOT dropped — attach is
+    // generation-checked and a missing expected_generation is rejected outright
+    // (internal/server/terminalroute.go), so carrying it forward is what makes a
+    // reconnect land on the same pane incarnation instead of failing or, worse,
+    // attaching to a recycled pane.
+    this.connectOpts = { expectedGeneration: this.connectOpts.expectedGeneration };
     this.handlers.onStatus("reconnecting");
     if (this.reconnectTimer) clearTimeout(this.reconnectTimer);
     this.reconnectTimer = setTimeout(() => {

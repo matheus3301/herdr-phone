@@ -1,12 +1,12 @@
 import { StrictMode } from "react";
 import { createRoot } from "react-dom/client";
 
-// Self-hosted fonts (no runtime CDN). Spline Sans variable for UI; Commit Mono
-// for terminal/IDs/utility labels (SPEC §14.2).
-import "@fontsource-variable/spline-sans/index.css";
-import "@fontsource/commit-mono/400.css";
-import "@fontsource/commit-mono/500.css";
-import "@fontsource/commit-mono/700.css";
+// Self-hosted fonts (no runtime CDN). Public Sans variable carries navigation,
+// conversation, and body copy; IBM Plex Mono is restricted to commands, paths,
+// ids, timestamps, and the console.
+import "@fontsource-variable/public-sans/index.css";
+import "@fontsource/ibm-plex-mono/400.css";
+import "@fontsource/ibm-plex-mono/500.css";
 import "@xterm/xterm/css/xterm.css";
 import "./index.css";
 

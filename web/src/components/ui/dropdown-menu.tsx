@@ -14,7 +14,7 @@ export const DropdownMenuContent = React.forwardRef<
       ref={ref}
       sideOffset={sideOffset}
       className={cn(
-        "z-50 min-w-[10rem] overflow-hidden rounded-[10px] border border-frame bg-bulkhead p-1 seam shadow-[0_8px_28px_rgba(0,0,0,0.45)]",
+        "z-50 min-w-[12rem] overflow-hidden rounded-[10px] border border-frame bg-bulkhead p-1 shadow-[0_10px_30px_rgba(0,0,0,0.4)]",
         className,
       )}
       {...props}
@@ -30,7 +30,7 @@ export const DropdownMenuItem = React.forwardRef<
   <DropdownMenuPrimitive.Item
     ref={ref}
     className={cn(
-      "flex min-h-10 cursor-pointer select-none items-center gap-2 rounded-[8px] px-3 py-2 text-sm outline-none",
+      "flex min-h-11 cursor-pointer select-none items-center gap-2 rounded-log px-3 py-2 text-body outline-none",
       "focus:bg-hull data-[disabled]:pointer-events-none data-[disabled]:opacity-50",
       destructive ? "text-flare focus:bg-flare/15" : "text-mist",
       className,
@@ -45,6 +45,6 @@ export function DropdownMenuSeparator({ className }: { className?: string }) {
 }
 export function DropdownMenuLabel({ className, ...props }: React.HTMLAttributes<HTMLDivElement>) {
   return (
-    <div className={cn("px-3 py-1.5 font-utility text-[11px] uppercase tracking-wider text-muted-ink", className)} {...props} />
+    <div className={cn("px-3 py-1.5 text-meta font-medium text-muted-ink", className)} {...props} />
   );
 }

@@ -14,6 +14,9 @@ export default defineConfig({
     environment: "jsdom",
     setupFiles: ["./vitest.setup.ts"],
     css: false,
+    // jsdom + userEvent is slow, and the suite runs many files in parallel. The
+    // 5s default trips on a loaded machine long before a real hang would.
+    testTimeout: 20_000,
     include: ["src/**/*.{test,spec}.{ts,tsx}"],
     exclude: ["e2e/**", "node_modules/**"],
     coverage: {

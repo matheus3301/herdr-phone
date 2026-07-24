@@ -11,7 +11,16 @@ describe("ConfirmAction — accessible destructive confirmation", () => {
     vi.spyOn(store, "prepareConfirmation").mockResolvedValue({ confirmation: "cnf-1", expiresUnixMs: Date.now() + 30_000 });
     const runSpy = vi.spyOn(store, "runMutation").mockResolvedValue({ request_id: "r", accepted: true, result: {} });
 
-    render(<ConfirmAction operation="pane.close" resourceId="w1:p1" label="server" params={{ pane_id: "w1:p1" }} trigger={<button>close</button>} />);
+    render(
+      <ConfirmAction
+        operation="pane.close"
+        resourceId="w1:p1"
+        label="server"
+        params={{ pane_id: "w1:p1" }}
+        expectedGeneration={3}
+        trigger={<button>close</button>}
+      />,
+    );
     await userEvent.click(screen.getByRole("button", { name: "close" }));
 
     const dialog = await screen.findByRole("alertdialog");
@@ -19,7 +28,23 @@ describe("ConfirmAction — accessible destructive confirmation", () => {
 
     await userEvent.click(screen.getByRole("button", { name: /^confirm$/i }));
     await waitFor(() => expect(runSpy).toHaveBeenCalled());
-    expect(runSpy.mock.calls[0][2]).toMatchObject({ confirmation: "cnf-1" });
+    // The nonce and the mutation are bound to the same pane generation.
+    expect(runSpy.mock.calls[0][2]).toMatchObject({ confirmation: "cnf-1", expectedGeneration: 3 });
+  });
+
+  it("refuses a pane-scoped destructive action with no generation, before any call", async () => {
+    vi.spyOn(store, "prepareConfirmation").mockResolvedValue({ confirmation: "cnf-1", expiresUnixMs: Date.now() + 30_000 });
+    const runSpy = vi.spyOn(store, "runMutation").mockResolvedValue({ request_id: "r", accepted: true, result: {} });
+
+    render(
+      <ConfirmAction operation="pane.close" resourceId="w1:p1" label="server" params={{ pane_id: "w1:p1" }} trigger={<button>close</button>} />,
+    );
+    await userEvent.click(screen.getByRole("button", { name: "close" }));
+    await screen.findByRole("alertdialog");
+    await userEvent.click(screen.getByRole("button", { name: /^confirm$/i }));
+
+    expect(runSpy).not.toHaveBeenCalled();
+    expect(await screen.findByRole("alert")).toHaveTextContent(/generation is unknown/i);
   });
 
   it("escalates to the forced operation when the primary op is refused", async () => {

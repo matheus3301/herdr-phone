@@ -6,6 +6,7 @@ import { encodeChordBytes } from "@/lib/key-encode";
 import { sanitizePaste } from "@/lib/paste";
 import { usePrefersReducedMotion } from "@/hooks/use-media-query";
 import { Button } from "@/components/ui/button";
+import { CONNECTION_MESSAGES } from "@/lib/connection";
 
 export interface TerminalHandle {
   sendText: (text: string) => void;
@@ -105,7 +106,7 @@ export const TerminalView = forwardRef<TerminalHandle, TerminalViewProps>(
       if (!host) return;
 
       const term = new Terminal({
-        fontFamily: '"Commit Mono", ui-monospace, monospace',
+        fontFamily: '"IBM Plex Mono", ui-monospace, monospace',
         fontSize,
         theme: THEME,
         cursorBlink: !reducedMotion,
@@ -221,16 +222,17 @@ export const TerminalView = forwardRef<TerminalHandle, TerminalViewProps>(
           aria-label={`Terminal for pane ${paneId}`}
         />
         {(status === "reconnecting" || status === "connecting") && !conflict && (
-          <div className="pointer-events-none absolute left-1/2 top-2 -translate-x-1/2 rounded-full border border-frame bg-bulkhead px-3 py-1 font-utility text-[11px] text-muted-ink">
-            {status === "connecting" ? "attaching…" : "reattaching…"}
+          <div
+            role="status"
+            className="tabular pointer-events-none absolute left-1/2 top-2 -translate-x-1/2 rounded-full bg-bulkhead px-3 py-1 text-muted-ink ring-1 ring-frame"
+          >
+            {status === "connecting" ? "Attaching…" : "Reattaching…"}
           </div>
         )}
         {conflict && (
-          <div className="absolute inset-x-2 top-2 rounded-[10px] border border-flare/50 bg-bulkhead p-3">
-            <p className="text-sm text-mist">Another controller owns this terminal.</p>
-            <p className="mt-0.5 text-[13px] text-muted-ink">
-              Only one controller can drive input at a time. Take over to seize control.
-            </p>
+          <div className="absolute inset-x-2 top-2 rounded-log bg-bulkhead p-3 ring-1 ring-flare/50" role="alert">
+            <p className="text-body font-medium text-mist">{CONNECTION_MESSAGES["console-conflict"].title}</p>
+            <p className="mt-0.5 text-meta text-muted-ink">{CONNECTION_MESSAGES["console-conflict"].detail}</p>
             <div className="mt-2 flex justify-end">
               <Button variant="danger" size="sm" onClick={() => void takeover()}>
                 Take over

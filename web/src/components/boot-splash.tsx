@@ -8,7 +8,7 @@ export function BootSplash({ label }: { label: string }) {
       style={{ paddingTop: "var(--spacing-safe-top)", paddingBottom: "var(--spacing-safe-bottom)" }}
     >
       <BrandMark className="size-16" beacon />
-      <div className="font-utility text-sm uppercase tracking-widest text-muted-ink" role="status" aria-live="polite">
+      <div className="tabular uppercase tracking-widest text-muted-ink" role="status" aria-live="polite">
         {label}
       </div>
     </div>
