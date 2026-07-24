@@ -330,7 +330,7 @@ func paneMove(ctx context.Context, c *herdr.Client, raw json.RawMessage) (json.R
 	case "new_workspace":
 		dest = herdr.MoveToNewWorkspace(p.Destination.Label, p.Destination.TabLabel)
 	default:
-		return nil, fmt.Errorf("integration: pane.move requires a destination type of tab, new_tab, or new_workspace")
+		return nil, herdr.NewError(herdr.CodeInvalidParams, "pane.move requires a destination type of tab, new_tab, or new_workspace")
 	}
 	return result(c.PaneMove(ctx, p.PaneID, dest, p.Focus))
 }
@@ -348,10 +348,10 @@ func decode(raw json.RawMessage, v any) error {
 	dec := json.NewDecoder(bytes.NewReader(raw))
 	dec.DisallowUnknownFields()
 	if err := dec.Decode(v); err != nil {
-		return fmt.Errorf("integration: invalid params: %w", err)
+		return herdr.NewError(herdr.CodeInvalidParams, "invalid params: "+err.Error())
 	}
 	if dec.More() {
-		return fmt.Errorf("integration: invalid params: unexpected trailing data")
+		return herdr.NewError(herdr.CodeInvalidParams, "invalid params: unexpected trailing data")
 	}
 	return nil
 }

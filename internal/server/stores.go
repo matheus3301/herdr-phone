@@ -112,9 +112,15 @@ type idemEntry struct {
 	// pending marks an in-flight reservation: a request is currently executing
 	// under this key and no response has been cached yet.
 	pending bool
+	// fingerprint binds this entry to the exact request that created it (its
+	// operation, asserted generation, and normalized params). A request id is
+	// client-chosen, so without this binding a reused id could replay a response
+	// belonging to a different payload — or have a different payload's response
+	// cached against it.
+	fingerprint string
 }
 
-// idemResult is the outcome of a reservation attempt.
+// idemResult is the outcome of a lookup or reservation attempt.
 type idemResult int
 
 const (
@@ -125,6 +131,11 @@ const (
 	idemInFlight
 	// idemDone: a cached response is available (returned in the entry).
 	idemDone
+	// idemMismatch: the key is in use by a request with a different
+	// operation/params fingerprint. The caller must reject rather than replay.
+	idemMismatch
+	// idemMiss: no live entry exists for the key (peek only).
+	idemMiss
 )
 
 // idemStore caches mutation responses by session+request id so a network retry
@@ -144,47 +155,61 @@ func idemKey(session, requestID string) string {
 	return session + "\x00" + requestID
 }
 
-// get returns a cached, completed response. An in-flight reservation is not a
-// cached result, so it reports a miss (the authoritative check is reserve).
-func (s *idemStore) get(key string) (idemEntry, bool) {
+// peek resolves a key without reserving it. It returns idemDone with the cached
+// response when one exists for this exact fingerprint, idemMismatch when the key
+// belongs to a different request, and idemMiss otherwise (including an in-flight
+// reservation of the same request, whose authoritative check is reserve).
+func (s *idemStore) peek(key, fingerprint string) (idemEntry, idemResult) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	e, ok := s.m[key]
-	if !ok || e.pending {
-		return idemEntry{}, false
+	if !ok {
+		return idemEntry{}, idemMiss
 	}
 	if s.now().After(e.expiresAt) {
 		delete(s.m, key)
-		return idemEntry{}, false
+		return idemEntry{}, idemMiss
 	}
-	return e, true
+	if e.fingerprint != fingerprint {
+		return idemEntry{}, idemMismatch
+	}
+	if e.pending {
+		return idemEntry{}, idemMiss
+	}
+	return e, idemDone
 }
 
 // reserve atomically resolves a key: it returns a cached completed response
-// (idemDone), reports a concurrent in-flight duplicate (idemInFlight), or marks
-// the key reserved for this caller (idemReserved). A reservation expires after
+// (idemDone), reports a concurrent in-flight duplicate (idemInFlight), rejects a
+// request id already bound to a different payload (idemMismatch), or marks the
+// key reserved for this caller (idemReserved). A reservation expires after
 // reservationTTL so a crashed owner cannot block the key forever.
-func (s *idemStore) reserve(key string, reservationTTL time.Duration) (idemEntry, idemResult) {
+func (s *idemStore) reserve(key, fingerprint string, reservationTTL time.Duration) (idemEntry, idemResult) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.gcLocked()
 	if e, ok := s.m[key]; ok {
+		if e.fingerprint != fingerprint {
+			return idemEntry{}, idemMismatch
+		}
 		if e.pending {
 			return idemEntry{}, idemInFlight
 		}
 		return e, idemDone
 	}
-	s.m[key] = idemEntry{pending: true, expiresAt: s.now().Add(reservationTTL)}
+	s.m[key] = idemEntry{pending: true, expiresAt: s.now().Add(reservationTTL), fingerprint: fingerprint}
 	return idemEntry{}, idemReserved
 }
 
 // complete replaces a reservation with the final cached response, held for ttl.
-func (s *idemStore) complete(key string, status int, body []byte, ttl time.Duration) {
+// The fingerprint is carried over so a later reuse of the request id with a
+// different payload is still rejected rather than replayed.
+func (s *idemStore) complete(key, fingerprint string, status int, body []byte, ttl time.Duration) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	cp := make([]byte, len(body))
 	copy(cp, body)
-	s.m[key] = idemEntry{status: status, body: cp, expiresAt: s.now().Add(ttl)}
+	s.m[key] = idemEntry{status: status, body: cp, expiresAt: s.now().Add(ttl), fingerprint: fingerprint}
 }
 
 // release drops a reservation without caching a result, so a retry may proceed.
