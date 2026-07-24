@@ -6,6 +6,7 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"slices"
+	"strconv"
 
 	"github.com/matheus3301/herdr-phone/internal/herdr"
 )
@@ -48,6 +49,10 @@ type projWS struct {
 	ID, Label, ActiveTab, Status string
 	Number, PaneCount, TabCount  int
 	Focused                      bool
+	// Worktree is the workspace's checkout provenance. It is part of the hashed
+	// content because a run's repository context is UI-meaningful: a workspace
+	// that moves to another checkout must rebroadcast.
+	Worktree string
 }
 
 type projTab struct {
@@ -80,6 +85,7 @@ func project(s *herdr.Snapshot) hashProjection {
 		p.Workspaces = append(p.Workspaces, projWS{
 			ID: w.WorkspaceID, Label: w.Label, ActiveTab: w.ActiveTabID, Status: string(w.AgentStatus),
 			Number: w.Number, PaneCount: w.PaneCount, TabCount: w.TabCount, Focused: w.Focused,
+			Worktree: worktreeKey(w.Worktree),
 		})
 	}
 	for _, t := range s.Tabs {
@@ -120,6 +126,17 @@ func project(s *herdr.Snapshot) hashProjection {
 	slices.SortFunc(p.Layouts, func(a, b herdr.Layout) int { return cmp.Compare(a.TabID, b.TabID) })
 	slices.SortFunc(p.Worktrees, func(a, b herdr.Worktree) int { return cmp.Compare(a.Path, b.Path) })
 	return p
+}
+
+// worktreeKey renders a workspace's checkout provenance as one stable hash key.
+// A nil worktree (a workspace outside a git work tree) hashes as the empty
+// string, distinct from any real checkout.
+func worktreeKey(w *herdr.WorkspaceWorktree) string {
+	if w == nil {
+		return ""
+	}
+	return w.RepoKey + "\x00" + w.RepoName + "\x00" + w.RepoRoot + "\x00" + w.CheckoutPath +
+		"\x00" + strconv.FormatBool(w.IsLinkedWorktree)
 }
 
 // canonicalLayouts returns a deep-enough copy of layouts with each layout's

@@ -192,3 +192,49 @@ func TestSanitizeForLog_SingleLineStillRedactsWholeValue(t *testing.T) {
 		}
 	}
 }
+
+// TestSanitizeTextBlock covers the multi-line sanitizer used for observed
+// terminal output: line structure survives, every terminal control does not.
+func TestSanitizeTextBlock(t *testing.T) {
+	t.Parallel()
+	cases := []struct{ name, in, want string }{
+		{"keeps newlines and tabs", "a\nb\tc", "a\nb\tc"},
+		{"drops escape", "a\x1b[31mb", "a[31mb"},
+		{"drops osc title", "a\x1b]0;pwned\x07b", "a]0;pwnedb"},
+		{"drops carriage return", "typed\rrewritten", "typedrewritten"},
+		{"drops nul and del", "a\x00b\x7fc", "abc"},
+		{"drops c1", "abc", "abc"},
+		{"keeps utf8", "héllo 日本 ✓", "héllo 日本 ✓"},
+		{"empty", "", ""},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := SanitizeTextBlock(tc.in); got != tc.want {
+				t.Fatalf("SanitizeTextBlock(%q) = %q, want %q", tc.in, got, tc.want)
+			}
+		})
+	}
+}
+
+// No control character other than LF and TAB may survive. A carriage return in
+// particular must go: it would let a repaint overwrite a line the operator has
+// already read in a non-terminal renderer.
+func TestSanitizeTextBlockNoControlSurvives(t *testing.T) {
+	t.Parallel()
+	var b strings.Builder
+	for r := rune(0); r < 0xA0; r++ {
+		b.WriteRune(r)
+	}
+	out := SanitizeTextBlock(b.String())
+	for _, r := range out {
+		if r == '\n' || r == '\t' {
+			continue
+		}
+		if r < 0x20 || r == 0x7F || (r >= 0x80 && r <= 0x9F) {
+			t.Fatalf("control %U survived sanitization", r)
+		}
+	}
+	if !strings.Contains(out, "\n") || !strings.Contains(out, "\t") {
+		t.Fatalf("newline and tab must survive: %q", out)
+	}
+}
