@@ -4,6 +4,8 @@ import {
   emptyDraft,
   initialSteps,
   LaunchStore,
+  launchDeliveryUnknown,
+  launchHasRetryableStep,
   launchPartiallySucceeded,
   launchSucceeded,
   LAUNCH_STEPS,
@@ -60,6 +62,30 @@ describe("step sequencing", () => {
     expect(launchSucceeded(steps)).toBe(false);
     expect(launchPartiallySucceeded(steps)).toBe(true);
   });
+
+  // Review HIGH 1. An uncertain delivery is terminal: the orchestration loop must
+  // not pick the prompt step up again, because re-running it is exactly the
+  // duplicate instruction into a live shell the delivery contract forbids.
+  it("treats an uncertain delivery as settled, so nothing re-sends it", () => {
+    const steps = initialSteps();
+    steps[0].status = "done";
+    steps[1].status = "done";
+    steps[2].status = "done";
+    steps[3].status = "delivery_unknown";
+    expect(nextStep(steps)).toBeNull();
+    expect(launchSucceeded(steps)).toBe(false);
+    expect(launchDeliveryUnknown(steps)).toBe(true);
+    expect(launchPartiallySucceeded(steps)).toBe(true);
+    // And it is not offered to the generic failed-step retry.
+    expect(launchHasRetryableStep(steps)).toBe(false);
+  });
+
+  it("still reports a genuinely failed step as retryable", () => {
+    const steps = initialSteps();
+    steps[2].status = "failed";
+    expect(launchHasRetryableStep(steps)).toBe(true);
+    expect(launchDeliveryUnknown(steps)).toBe(false);
+  });
 });
 
 describe("LaunchStore", () => {
@@ -101,6 +127,19 @@ describe("LaunchStore", () => {
     // The completed work keeps its receipt line.
     expect(state.steps[0].detail).toBe("Using space-api");
     expect(nextStep(state.steps)?.id).toBe("agent");
+  });
+
+  it("leaves an uncertain delivery alone when the failed step is retried", () => {
+    store.setStep("workspace", { status: "done", detail: "Using space-api" });
+    store.setStep("pane", { status: "done", detail: "Pane w1:p2" });
+    store.setStep("agent", { status: "failed", error: "boom" });
+    store.setStep("prompt", { status: "delivery_unknown", error: "operation outcome uncertain" });
+    store.prepareRetry();
+
+    const state = store.getState();
+    expect(state.steps.map((s) => s.status)).toEqual(["done", "done", "pending", "delivery_unknown"]);
+    // The uncertain send keeps its own record and its own recovery.
+    expect(state.steps[3].error).toBe("operation outcome uncertain");
   });
 
   it("resets to a clean compose state on demand", () => {

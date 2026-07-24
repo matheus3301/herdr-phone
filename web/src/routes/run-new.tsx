@@ -1,6 +1,6 @@
 import { useEffect, useMemo } from "react";
 import { Link, useNavigate } from "react-router-dom";
-import { Check, CircleAlert, CircleDashed, Loader, MinusCircle, Rocket } from "lucide-react";
+import { Check, CircleAlert, CircleDashed, CircleHelp, Loader, MinusCircle, Rocket } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
@@ -10,7 +10,14 @@ import { useAppState } from "@/hooks/use-app-store";
 import { useLaunch } from "@/hooks/use-launch";
 import { useRouteTitle } from "@/hooks/use-route-title";
 import { isValidAgentName, suggestAgentName } from "@/lib/agent-name";
-import { launchPartiallySucceeded, launchSucceeded, type LaunchStep, type LaunchTargetKind } from "@/lib/launch";
+import {
+  launchDeliveryUnknown,
+  launchHasRetryableStep,
+  launchPartiallySucceeded,
+  launchSucceeded,
+  type LaunchStep,
+  type LaunchTargetKind,
+} from "@/lib/launch";
 import { cn } from "@/lib/utils";
 
 const STEP_ICON = {
@@ -18,6 +25,7 @@ const STEP_ICON = {
   running: Loader,
   done: Check,
   failed: CircleAlert,
+  delivery_unknown: CircleHelp,
   skipped: MinusCircle,
 } as const;
 
@@ -26,7 +34,20 @@ const STEP_TONE = {
   running: "text-tide",
   done: "text-tide",
   failed: "text-flare",
+  // Brass, not flare: an uncertain delivery is not a refusal, and colouring it
+  // as one pushes the operator toward re-sending without thinking.
+  delivery_unknown: "text-brass",
   skipped: "text-faint-ink",
+} as const;
+
+/** The word a step's outcome is announced with, for the screen reader. */
+const STEP_STATUS_TEXT = {
+  pending: "pending",
+  running: "running",
+  done: "done",
+  failed: "failed",
+  delivery_unknown: "delivery unknown",
+  skipped: "skipped",
 } as const;
 
 function Receipt({ steps }: { steps: LaunchStep[] }) {
@@ -43,11 +64,14 @@ function Receipt({ steps }: { steps: LaunchStep[] }) {
             <p className={cn("flex items-center gap-1.5 text-body", STEP_TONE[step.status])}>
               <Icon className="size-4 shrink-0" aria-hidden />
               <span className="text-mist">{step.title}</span>
-              <span className="sr-only">{step.status}</span>
+              <span className="sr-only">{STEP_STATUS_TEXT[step.status]}</span>
             </p>
             {step.detail && <p className="tabular text-faint-ink">{step.detail}</p>}
             {step.error && (
-              <p className="text-meta text-flare" role="alert">
+              <p
+                className={cn("text-meta", step.status === "failed" ? "text-flare" : "text-muted-ink")}
+                role={step.status === "failed" ? "alert" : undefined}
+              >
                 {step.error}
               </p>
             )}
@@ -97,7 +121,7 @@ export function StartRunRoute() {
   const heading = useRouteTitle("Start run");
   const navigate = useNavigate();
   const { snapshot, capabilities } = useAppState();
-  const { state, patchDraft, launch, retry, reset, problem } = useLaunch();
+  const { state, patchDraft, launch, retry, resendObjective, reset, problem } = useLaunch();
   const { draft, steps, phase, created } = state;
 
   const operations = useMemo(() => new Set(capabilities?.operations ?? []), [capabilities]);
@@ -157,17 +181,27 @@ export function StartRunRoute() {
   if (phase !== "compose") {
     const succeeded = launchSucceeded(steps);
     const partial = launchPartiallySucceeded(steps);
+    const uncertain = launchDeliveryUnknown(steps);
+    const retryable = launchHasRetryableStep(steps);
     return (
       <div className="min-h-0 flex-1 overflow-y-auto px-4 py-5">
         <h1 ref={heading} tabIndex={-1} className="text-prose font-semibold text-mist">
-          {phase === "running" ? "Starting the run…" : succeeded ? "Run started" : "Run partly started"}
+          {phase === "running"
+            ? "Starting the run…"
+            : succeeded
+              ? "Run started"
+              : uncertain
+                ? "Agent started, delivery unknown"
+                : "Run partly started"}
         </h1>
         <p className="mt-1 max-w-prose text-body text-muted-ink">
           {succeeded
             ? "Every step completed. The run is now in your inbox."
-            : partial
-              ? "Some steps completed and were kept. Nothing that succeeded has been undone — retry the failed step or finish it yourself."
-              : "The launch stopped at the first failed step."}
+            : uncertain
+              ? "The agent is running and is in your inbox. The relay could not confirm the objective reached it, and it may already have. Check the console before sending it again."
+              : partial
+                ? "Some steps completed and were kept. Nothing that succeeded has been undone — retry the failed step or finish it yourself."
+                : "The launch stopped at the first failed step."}
         </p>
 
         <div className="mt-4">
@@ -198,9 +232,13 @@ export function StartRunRoute() {
         )}
 
         <div className="mt-5 flex flex-wrap gap-2">
-          {succeeded && created.runId && (
+          {/* The run id is recorded at the *agent* step, so it exists whenever the
+              agent is live — including after a refused or uncertain first
+              instruction. Withholding the route to a run that is already in the
+              inbox is weaker recovery than the launch receipt owes the operator. */}
+          {created.runId && (
             <Button
-              variant="primary"
+              variant={succeeded ? "primary" : "outline"}
               onClick={() => {
                 const id = created.runId!;
                 reset();
@@ -210,9 +248,17 @@ export function StartRunRoute() {
               Open the run
             </Button>
           )}
-          {!succeeded && phase === "settled" && (
+          {retryable && phase === "settled" && (
             <Button variant="primary" onClick={() => void retry()}>
               Retry the failed step
+            </Button>
+          )}
+          {/* Deliberate, separately labelled, and warned — never folded into
+              "Retry the failed step", which would re-send an instruction the
+              agent may already have. */}
+          {uncertain && phase === "settled" && (
+            <Button variant="outline" onClick={() => void resendObjective()}>
+              Send the objective again
             </Button>
           )}
           {created.workspaceId && (
@@ -298,7 +344,7 @@ export function StartRunRoute() {
                   {workspaces.map((w) => (
                     <option key={w.id} value={w.id}>
                       {w.label}
-                      {w.worktree?.branch ? ` / ${w.worktree.branch}` : ""}
+                      {w.worktree && w.worktree.repoName !== w.label ? ` / ${w.worktree.repoName}` : ""}
                     </option>
                   ))}
                 </select>

@@ -19,7 +19,18 @@ export type LaunchTargetKind = "existing" | "new-workspace" | "new-worktree";
 export const LAUNCH_STEPS = ["workspace", "pane", "agent", "prompt"] as const;
 export type LaunchStepId = (typeof LAUNCH_STEPS)[number];
 
-export type LaunchStepStatus = "pending" | "running" | "done" | "failed" | "skipped";
+/**
+ * `delivery_unknown` is a terminal outcome distinct from `failed`.
+ *
+ * The relay can lose certainty *after* Herdr may already have accepted a prompt.
+ * Calling that "failed" and then offering the generic retry is how a launch
+ * duplicates an instruction into a live shell, which the delivery contract
+ * forbids: a timed-out message must never be silently retried. So this status
+ * is excluded from `nextStep` and from `prepareRetry`, and the only way to send
+ * again is a separately labelled, explicitly warned action — the same shape the
+ * run composer already uses.
+ */
+export type LaunchStepStatus = "pending" | "running" | "done" | "failed" | "delivery_unknown" | "skipped";
 
 export interface LaunchStep {
   id: LaunchStepId;
@@ -108,17 +119,36 @@ export function draftProblem(draft: LaunchDraft): string | null {
   return null;
 }
 
-/** The first step that still needs to run, or null when the launch is complete. */
+/** Statuses the orchestration must never run again on its own. */
+const SETTLED: LaunchStepStatus[] = ["done", "skipped", "delivery_unknown"];
+
+/**
+ * The first step that still needs to run, or null when nothing may run.
+ *
+ * `delivery_unknown` counts as settled: re-running it is exactly the duplicate
+ * send the delivery contract forbids.
+ */
 export function nextStep(steps: LaunchStep[]): LaunchStep | null {
-  return steps.find((s) => s.status !== "done" && s.status !== "skipped") ?? null;
+  return steps.find((s) => !SETTLED.includes(s.status)) ?? null;
 }
 
 export function launchSucceeded(steps: LaunchStep[]): boolean {
   return steps.every((s) => s.status === "done" || s.status === "skipped");
 }
 
+/** True when the launch stopped with an uncertain — not refused — delivery. */
+export function launchDeliveryUnknown(steps: LaunchStep[]): boolean {
+  return steps.some((s) => s.status === "delivery_unknown");
+}
+
 export function launchPartiallySucceeded(steps: LaunchStep[]): boolean {
-  return steps.some((s) => s.status === "failed") && steps.some((s) => s.status === "done");
+  const stopped = steps.some((s) => s.status === "failed" || s.status === "delivery_unknown");
+  return stopped && steps.some((s) => s.status === "done");
+}
+
+/** True when a step the generic retry can safely repeat is outstanding. */
+export function launchHasRetryableStep(steps: LaunchStep[]): boolean {
+  return steps.some((s) => s.status === "failed");
 }
 
 /**
@@ -160,7 +190,14 @@ export class LaunchStore {
     this.set({ created: { ...this.state.created, ...patch } });
   }
 
-  /** Clear only the failure on the step being retried; keep completed work. */
+  /**
+   * Clear only the failure on the step being retried; keep completed work.
+   *
+   * Deliberately matches `failed` alone. A `delivery_unknown` step must never be
+   * reset here: this is the generic "retry the failed step" path, and sweeping an
+   * uncertain delivery back into it would re-send an instruction that may already
+   * have reached the shell.
+   */
   prepareRetry(): void {
     this.set({
       phase: "running",

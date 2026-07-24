@@ -9,6 +9,7 @@ import {
   type LaunchState,
 } from "@/lib/launch";
 import { formatRunId } from "@/lib/run";
+import { classifySend } from "@/lib/run-adapter";
 import type { MutationResponse, Snapshot } from "@/lib/types";
 
 /** Read a nested `{ <key>: { <id field>: string } }` out of a mutation result. */
@@ -22,6 +23,15 @@ function idFrom(res: MutationResponse | null, container: string, field: string):
   return typeof value === "string" && value ? value : undefined;
 }
 
+/**
+ * Collapse a mutation result to a message, for the steps where a plain failure
+ * is the right reading.
+ *
+ * The **prompt** step deliberately does not use this — see `classifySend` below.
+ * Retrying a creation step can at worst leave a second visible, removable
+ * workspace or a refused duplicate agent name; retrying an instruction can put
+ * the same text into a live shell twice, which nothing undoes.
+ */
 function errorOf(res: MutationResponse | null): string | null {
   if (!res) return "The relay did not answer.";
   if ("error" in res && res.error) return res.error.message;
@@ -75,6 +85,12 @@ export interface LaunchController {
   launch: () => Promise<void>;
   /** Retry from the first failed step; nothing already done is repeated. */
   retry: () => Promise<void>;
+  /**
+   * Deliberately re-send the objective after an uncertain delivery. Separate
+   * from `retry` on purpose: it may duplicate an instruction, so it is never
+   * reached by the generic failed-step path.
+   */
+  resendObjective: () => Promise<void>;
   reset: () => void;
   problem: string | null;
 }
@@ -228,20 +244,67 @@ export function useLaunch(): LaunchController {
         fail("The target pane is no longer available.");
         return;
       }
+      launchStore.recordCreated({ runId: formatRunId({ paneId, generation }) });
       const res = await runPane("agent.prompt", { paneId, generation }, { text: draft.objective.trim() });
-      const error = errorOf(res);
-      if (error) {
-        // The agent is running and the workspace exists; only the first
-        // instruction failed. Say exactly that instead of unwinding the run.
-        fail(error);
+      // The same classifier the composer uses. A retryable failure means the
+      // relay lost certainty *after* Herdr may have accepted the text, so it is
+      // recorded as an uncertain delivery — never as a plain failure that the
+      // generic retry would silently re-send.
+      const outcome = classifySend(res);
+      if (outcome.kind === "delivery_unknown") {
+        launchStore.setStep(step.id, {
+          status: "delivery_unknown",
+          detail: "The relay lost certainty before the objective was confirmed",
+          error: outcome.message,
+        });
+        launchStore.setPhase("settled");
         return;
       }
-      launchStore.recordCreated({ runId: formatRunId({ paneId, generation }) });
+      if (outcome.kind === "rejected") {
+        // The agent is running and the workspace exists; only the first
+        // instruction was refused. Say exactly that instead of unwinding the run.
+        fail(outcome.message);
+        return;
+      }
       launchStore.setStep(step.id, { status: "done", detail: "Objective delivered" });
     }
 
     launchStore.setPhase("settled");
   }, [run, runPane]);
+
+  /**
+   * Send the objective again after an uncertain delivery.
+   *
+   * Never reached automatically: the receipt exposes it as a separate, warned
+   * action, so a duplicate instruction to a live shell is always a decision the
+   * operator made with the console one tap away.
+   */
+  const resendObjective = useCallback(async () => {
+    const { created, draft } = launchStore.getState();
+    const paneId = created.paneId;
+    if (!paneId) return;
+    launchStore.setStep("prompt", { status: "running", error: null, detail: null });
+    const generation = await awaitPaneGeneration(paneId);
+    if (generation <= 0) {
+      launchStore.setStep("prompt", { status: "failed", error: "The target pane is no longer available." });
+      return;
+    }
+    const res = await runPane("agent.prompt", { paneId, generation }, { text: draft.objective.trim() });
+    const outcome = classifySend(res);
+    if (outcome.kind === "accepted") {
+      launchStore.setStep("prompt", { status: "done", detail: "Objective delivered", error: null });
+      return;
+    }
+    if (outcome.kind === "delivery_unknown") {
+      launchStore.setStep("prompt", {
+        status: "delivery_unknown",
+        detail: "The relay lost certainty before the objective was confirmed",
+        error: outcome.message,
+      });
+      return;
+    }
+    launchStore.setStep("prompt", { status: "failed", error: outcome.message });
+  }, [runPane]);
 
   const launch = useCallback(async () => {
     if (draftProblem(launchStore.getState().draft)) return;
@@ -258,6 +321,7 @@ export function useLaunch(): LaunchController {
     patchDraft: (patch) => launchStore.patchDraft(patch),
     launch,
     retry,
+    resendObjective,
     reset: () => launchStore.reset(),
     problem: draftProblem(state.draft),
   };
