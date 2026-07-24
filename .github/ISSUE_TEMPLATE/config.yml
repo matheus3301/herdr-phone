@@ -1,0 +1,5 @@
+blank_issues_enabled: false
+contact_links:
+  - name: Security vulnerability
+    url: https://github.com/matheus3301/herdr-phone/security/advisories/new
+    about: herdr-phone grants remote shell-equivalent access. Please report security issues privately, not as a public issue. See SECURITY.md.

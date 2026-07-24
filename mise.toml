@@ -1,0 +1,20 @@
+# Pins the toolchains for this repository.
+#
+# Go 1.26 is the single supported and tested backend series. It is pinned to the
+# exact patch 1.26.5, which fixes the standard-library security advisories
+# govulncheck reports against earlier 1.26 patches; go.mod and mise pin that
+# exact patch, and a synchronization test (internal/app/goversion_test.go) fails
+# loudly if go.mod, mise, or the CI workflows drift from it. CI workflows track
+# the 1.26 series (setup-go resolves the latest patch, never older than 1.26.5).
+#
+# Node 22 is the frontend build series. It is pinned to the exact patch 22.23.1
+# (the current latest Node 22, from `mise latest node@22`): a bare "22" let mise
+# reuse an already-installed 22.3.0, which is below Vite 7's Node 22.12+ floor and
+# printed an unsupported-engine warning. CI workflows pin the same 22.23.1
+# patch, and a consistency test (internal/app) fails if they drift.
+#
+# Activate with `mise install` and run tools through the pinned toolchains via
+# `mise exec -- <command>`, e.g. `mise exec -- make check`.
+[tools]
+go = "1.26.5"
+node = "22.23.1"

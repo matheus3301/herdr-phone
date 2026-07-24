@@ -1,0 +1,79 @@
+# herdr-phone configuration example.
+#
+# Copy this file to one of the following locations (first match wins):
+#   1. $HERDR_PLUGIN_CONFIG_DIR/config.toml   (set by Herdr when run as a plugin)
+#   2. $XDG_CONFIG_HOME/herdr-phone/config.toml
+#   3. $HOME/.config/herdr-phone/config.toml
+#
+# Unknown keys are rejected. Every value below is shown at its built-in default
+# unless a working named-tunnel deployment requires it to be set. The Cloudflare
+# tunnel token is NEVER stored in this file: it is produced by token_command (an
+# argv array run without a shell) or read from a mode-0600 token_file.
+
+[server]
+# The origin binds loopback only; it is reachable exclusively through the tunnel.
+host = "127.0.0.1"
+# Loopback port for the origin server (1-65535). Must be free at start.
+port = 8787
+# App session lifetime. A session also expires at the verified Access JWT expiry.
+session_ttl = "12h"
+# Idle period after which the session locks. Must not exceed session_ttl.
+idle_lock = "30m"
+# Directory roots the remote directory picker is confined to. "~" and explicit
+# environment variables are expanded; each root must exist and resolve without
+# escaping by symlink.
+allowed_workspace_roots = ["~"]
+
+[cloudflare]
+# Front door: "named" (Cloudflare named tunnel, the default) or "quick".
+mode = "named"
+# cloudflared executable (name on PATH or an absolute path).
+binary = "cloudflared"
+# Public https URL of the named tunnel's Access application (required in named
+# mode). Replace with your own hostname.
+public_url = "https://herdr.example.com"
+# Locally-managed tunnel strategy (leave empty when using a token strategy).
+config_file = ""
+tunnel = ""
+credentials_file = ""
+# Token-file strategy (a mode-0600 file containing the tunnel token).
+token_file = ""
+# Token-command strategy: an argv array that prints the tunnel token to stdout.
+# It is run directly (never through a shell); one trailing newline is trimmed and
+# the value is written only to a temporary mode-0600 file. This example reads the
+# token from the macOS login Keychain.
+token_command = ["security", "find-generic-password", "-s", "herdr-phone-tunnel", "-w"]
+# Quick Tunnels are ephemeral and unauthenticated at the edge; they must be opted
+# into explicitly and still require app pairing.
+quick_enabled = false
+# Graceful shutdown grace period for cloudflared.
+grace_period = "15s"
+
+[auth.access]
+# Cloudflare Access is the edge identity layer for named mode.
+enabled = true
+# Your Access team domain (bare hostname, no scheme).
+team_domain = "example.cloudflareaccess.com"
+# The Access application audience (AUD) tag. Required when Access is enabled.
+audience = "0000000000000000000000000000000000000000000000000000000000000000"
+# Optional exact-match allowlist of verified email or common_name claims. Empty
+# means any identity Access lets through is accepted.
+allowed_identities = []
+# How long a fetched JWKS key set is cached.
+jwks_ttl = "1h"
+
+[herdr]
+# Herdr socket path. Empty resolves from HERDR_SOCKET_PATH, then the default.
+socket_path = ""
+# Herdr binary. Empty resolves from HERDR_BIN_PATH, then "herdr" on PATH.
+binary = ""
+# Snapshot poll cadence while any agent is working/blocked or a browser is active.
+poll_hot = "1500ms"
+# Relaxed poll cadence when idle.
+poll_cold = "12s"
+
+[ui]
+# "system", "light", or "dark".
+theme = "system"
+# Default terminal font size in CSS pixels (independently configurable in the UI).
+terminal_font_size = 13

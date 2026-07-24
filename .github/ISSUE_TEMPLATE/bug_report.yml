@@ -1,0 +1,80 @@
+name: Bug report
+description: Report a problem with herdr-phone
+labels: [bug]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for the report. Please do **not** include any secret in this
+        issue: tunnel tokens, Access JWTs, session or pairing values, `cloudflared`
+        tokens, or full public URLs that embed a pairing fragment.
+  - type: textarea
+    id: what-happened
+    attributes:
+      label: What happened?
+      description: A clear description of the bug and what you expected instead.
+      placeholder: When I ..., I expected ..., but ...
+    validations:
+      required: true
+  - type: textarea
+    id: repro
+    attributes:
+      label: Steps to reproduce
+      placeholder: |
+        1. Run `herdr-phone ...`
+        2. ...
+    validations:
+      required: true
+  - type: dropdown
+    id: mode
+    attributes:
+      label: Tunnel mode
+      options:
+        - Named tunnel (Cloudflare Access)
+        - Quick Tunnel (explicitly enabled)
+        - Not sure
+    validations:
+      required: true
+  - type: textarea
+    id: doctor
+    attributes:
+      label: Output of `herdr-phone doctor`
+      description: This never prints secrets. Paste the full output.
+      render: text
+    validations:
+      required: false
+  - type: input
+    id: version
+    attributes:
+      label: herdr-phone version
+      placeholder: 0.1.0 (from `herdr-phone version`)
+    validations:
+      required: true
+  - type: input
+    id: herdr-version
+    attributes:
+      label: Herdr version
+      placeholder: 0.7.5 (from `herdr --version`)
+    validations:
+      required: true
+  - type: input
+    id: cloudflared-version
+    attributes:
+      label: cloudflared version
+      placeholder: 2026.7.2 (from `cloudflared --version`)
+    validations:
+      required: false
+  - type: input
+    id: os
+    attributes:
+      label: macOS version and architecture
+      placeholder: macOS 14 arm64 / macOS 13 amd64
+    validations:
+      required: true
+  - type: input
+    id: client
+    attributes:
+      label: Phone/browser
+      placeholder: iPhone 15, Safari 17 / Pixel 7, Chrome 126
+    validations:
+      required: false

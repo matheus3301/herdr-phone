@@ -1,0 +1,180 @@
+@import "tailwindcss";
+
+/* Dark is the primary field-instrument mode. `.light` opts into the pale variant. */
+@custom-variant light (&:where(.light, .light *));
+
+/*
+ * Herdr Phone visual system (SPEC §14.2).
+ * Palette: Deck / Bulkhead / Mist / Brass / Tide / Flare.
+ * This is deliberately NOT a stock shadcn dashboard: no card grid, no gradients,
+ * no glass. Surfaces are stacked edges and inset seams evoking a compact field
+ * instrument. Semantic tokens below map onto the six named colors.
+ */
+@theme {
+  --color-deck: #101820;
+  --color-bulkhead: #192732;
+  --color-mist: #dce7e4;
+  --color-brass: #e3b341;
+  --color-tide: #50a8a3;
+  --color-flare: #f1745e;
+
+  /* Derived structural tones */
+  --color-hull: #0b1117; /* deeper than deck, for wells behind the terminal */
+  --color-seam: #0c141b; /* inset seam line */
+  --color-frame: #2b3d4a; /* raised edge highlight */
+  --color-muted-ink: #8ba0a6; /* dimmed mist for secondary text */
+
+  /* Ink that sits ON a solid accent (button labels). It flips with the theme so
+   * a bright accent gets dark ink (dark mode) and a darkened accent gets light
+   * ink (light mode) — always a readable, accessible pairing. */
+  --color-onaccent: #101820;
+
+  /* The live terminal is an intrinsically dark field instrument. Its surface is
+   * FIXED dark in both themes (and is NOT overridden under .light) so xterm's
+   * pale foreground never lands on a pale surface. */
+  --color-terminal: #101820;
+
+  /* Semantic aliases used by primitives */
+  --color-background: var(--color-deck);
+  --color-surface: var(--color-bulkhead);
+  --color-foreground: var(--color-mist);
+  --color-muted: var(--color-muted-ink);
+  --color-accent: var(--color-brass);
+  --color-ok: var(--color-tide);
+  --color-danger: var(--color-flare);
+  --color-border: var(--color-frame);
+  --color-ring: var(--color-brass);
+
+  --font-sans: "Spline Sans Variable", ui-sans-serif, system-ui, -apple-system, sans-serif;
+  --font-mono: "Commit Mono", ui-monospace, "SF Mono", "Cascadia Code", monospace;
+
+  --radius-instrument: 10px;
+
+  --spacing-safe-top: env(safe-area-inset-top, 0px);
+  --spacing-safe-bottom: env(safe-area-inset-bottom, 0px);
+  --spacing-safe-left: env(safe-area-inset-left, 0px);
+  --spacing-safe-right: env(safe-area-inset-right, 0px);
+}
+
+:root {
+  color-scheme: dark;
+}
+/*
+ * Light ("pale instrument") theme. It re-defines the NAMED palette tokens
+ * themselves, not just the semantic aliases, so every existing utility
+ * (bg-deck / bg-bulkhead / bg-hull / text-mist / text-muted-ink / border-frame /
+ * text-brass …) adapts coherently with no per-component overrides. The semantic
+ * aliases (--color-background = var(--color-deck), …) cascade automatically.
+ *
+ * Surfaces become pale with preserved depth ordering (raised = lighter than the
+ * base, wells = slightly darker). Mist/muted-ink become dark, readable ink.
+ * Brass/Tide/Flare are darkened to keep accessible contrast both as text on a
+ * pale surface and, paired with the light --color-onaccent, as solid buttons.
+ */
+.light {
+  color-scheme: light;
+  --color-deck: #edf2f0; /* base surface */
+  --color-bulkhead: #f8fbfa; /* raised controls / sheets (lighter than base) */
+  --color-hull: #e2eae7; /* inset wells: inputs, card interiors (darker than base) */
+  --color-seam: #ccd8d4;
+  --color-frame: #b3c3bf;
+
+  --color-mist: #0f1a20; /* primary ink */
+  --color-muted-ink: #495a61; /* secondary ink (WCAG-readable on pale) */
+
+  --color-brass: #7a610f; /* dark gold */
+  --color-tide: #1c6d68;
+  --color-flare: #bb2f20;
+  --color-onaccent: #f8fbfa; /* light ink on the darkened accents */
+
+  color: var(--color-foreground);
+}
+
+* {
+  border-color: var(--color-border);
+}
+
+html,
+body,
+#root {
+  height: 100%;
+}
+
+body {
+  margin: 0;
+  background: var(--color-background);
+  color: var(--color-foreground);
+  font-family: var(--font-sans);
+  -webkit-font-smoothing: antialiased;
+  text-rendering: optimizeLegibility;
+  /* Prevent the whole document from bouncing; scroll happens inside panels. */
+  overscroll-behavior: none;
+  overflow: hidden;
+}
+
+/* Focus rings are required and always visible for keyboard users (SPEC §14.4). */
+:focus-visible {
+  outline: 2px solid var(--color-brass);
+  outline-offset: 2px;
+  border-radius: 4px;
+}
+
+/* Numeric/utility labels use the mono face for a control-panel feel. */
+.font-utility {
+  font-family: var(--font-mono);
+  font-feature-settings: "tnum" 1;
+  letter-spacing: 0.02em;
+}
+
+.seam {
+  box-shadow: inset 0 1px 0 0 color-mix(in srgb, var(--color-frame) 45%, transparent),
+    inset 0 -1px 0 0 var(--color-seam);
+}
+
+/* Minimal, instrument-like scrollbars. */
+* {
+  scrollbar-width: thin;
+  scrollbar-color: var(--color-frame) transparent;
+}
+*::-webkit-scrollbar {
+  width: 6px;
+  height: 6px;
+}
+*::-webkit-scrollbar-thumb {
+  background: var(--color-frame);
+  border-radius: 3px;
+}
+
+/* xterm surround: the terminal sits in the deepest well. */
+.xterm {
+  padding: 6px 8px;
+  height: 100%;
+}
+.xterm-viewport {
+  background-color: transparent !important;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.001ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.001ms !important;
+    scroll-behavior: auto !important;
+  }
+}
+
+/* A subtle attention pulse for blocked agents; suppressed under reduced motion. */
+@keyframes beacon {
+  0%,
+  100% {
+    opacity: 1;
+  }
+  50% {
+    opacity: 0.45;
+  }
+}
+.animate-beacon {
+  animation: beacon 1.6s ease-in-out infinite;
+}

@@ -1,0 +1,230 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+# Least privilege: CI only needs to read the repository.
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+# Toolchain versions. The backend targets the Go 1.26 series; CI and releases
+# pin the exact patch 1.26.5 because earlier 1.26 patches carry reachable
+# standard-library vulnerabilities. The frontend uses Node 22.23.1 (the 22 LTS
+# line; Vite 7 requires >= 22.12). Both are pinned in mise.toml (source of truth;
+# a repo-sync test keeps them in agreement). The binary embeds web/dist, so any
+# job that compiles the Go module builds the frontend first.
+env:
+  GO_VERSION: '1.26.5'
+  NODE_VERSION: '22.23.1'
+
+jobs:
+  # Primary gate: build and test the Go backend on the supported toolchain, on
+  # both Linux and the latest macOS.
+  test:
+    name: Backend test (${{ matrix.os }})
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version: ${{ env.GO_VERSION }}
+          check-latest: true
+          cache: true
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: npm
+          cache-dependency-path: web/package-lock.json
+      # web/dist is embedded by the Go binary, so it must exist before the Go
+      # module compiles (tests, coverage, and build all import the embed).
+      - name: Build embedded frontend
+        run: make build-web
+      - name: gofmt
+        run: make fmt-check
+      - name: go mod tidy
+        run: make tidy-check
+      - name: go vet
+        run: make vet
+      - name: Race tests and coverage
+        run: |
+          make test-race
+          make coverage COVERAGE_MIN=80
+      - name: Build
+        run: make build
+      - name: Shell syntax
+        run: |
+          sh -n scripts/build.sh
+          sh -n scripts/verify-plugin.sh
+          sh -n scripts/smoke-install.sh
+      - name: Install script source-build smoke test
+        run: |
+          rm -rf bin
+          sh scripts/build.sh
+          ./bin/herdr-phone version
+      - name: Offline install-fallback smoke test
+        run: make smoke-install
+      - name: Manifest and repo-sync verification
+        run: go test ./internal/app/ -run 'Manifest|ConfigExample|Goreleaser|GoVersion|NodeVersion'
+      - name: Upload coverage
+        if: matrix.os == 'ubuntu-latest'
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: coverage
+          path: coverage.txt
+          if-no-files-found: error
+
+  race:
+    name: Race tests uncached (${{ matrix.os }})
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version: ${{ env.GO_VERSION }}
+          check-latest: true
+          cache: true
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: npm
+          cache-dependency-path: web/package-lock.json
+      - name: Build embedded frontend
+        run: make build-web
+      - name: Uncached race tests
+        run: go test -race -count=1 ./...
+
+  frontend:
+    name: Frontend lint, typecheck, and unit/component tests
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: npm
+          cache-dependency-path: web/package-lock.json
+      # Reproducible install from the committed lockfile (fails on drift).
+      - name: Install (locked)
+        run: npm ci
+        working-directory: web
+      - name: Typecheck
+        run: npm run typecheck
+        working-directory: web
+      - name: Lint
+        run: npm run lint
+        working-directory: web
+      - name: Unit and component tests
+        run: npm test
+        working-directory: web
+      - name: Build
+        run: npm run build
+        working-directory: web
+
+  e2e:
+    name: Playwright mobile journeys
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: npm
+          cache-dependency-path: web/package-lock.json
+      - name: Install (locked)
+        run: npm ci
+        working-directory: web
+      - name: Install Playwright browsers
+        run: npx playwright install --with-deps chromium webkit
+        working-directory: web
+      # Mobile journeys run on Chromium (Pixel 7) and WebKit (iPhone 15) sizes.
+      - name: Run Playwright
+        run: npm run test:e2e
+        working-directory: web
+
+  verify-plugin:
+    name: Verify plugin (macOS)
+    # The manifest advertises macOS only, so verify on a macOS runner.
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version: ${{ env.GO_VERSION }}
+          check-latest: true
+          cache: true
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: npm
+          cache-dependency-path: web/package-lock.json
+      # Downloads the pinned official Herdr v0.7.5 (verified SHA-256) by default
+      # and validates the manifest against it in isolated state.
+      - name: make verify-plugin
+        run: make verify-plugin
+
+  goreleaser-check:
+    name: GoReleaser config check
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version: ${{ env.GO_VERSION }}
+          check-latest: true
+      - uses: goreleaser/goreleaser-action@f06c13b6b1a9625abc9e6e439d9c05a8f2190e94 # v7.2.3
+        with:
+          version: '~> v2'
+          args: check
+
+  govulncheck:
+    name: govulncheck
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      # Scan with the supported Go 1.26 toolchain — the same version release
+      # binaries are built with — so the vulnerability database is current.
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version: ${{ env.GO_VERSION }}
+          check-latest: true
+          cache: true
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: npm
+          cache-dependency-path: web/package-lock.json
+      # The embed must exist for the Go module to compile under govulncheck.
+      - name: Build embedded frontend
+        run: make build-web
+      - name: Run govulncheck
+        run: |
+          go install golang.org/x/vuln/cmd/govulncheck@v1.6.0
+          "$(go env GOPATH)/bin/govulncheck" ./...

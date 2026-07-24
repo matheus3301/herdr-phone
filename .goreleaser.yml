@@ -1,0 +1,60 @@
+# GoReleaser configuration. Produces static macOS binaries for amd64/arm64,
+# .tar.gz archives, a checksums.txt, and an SBOM. herdr-phone v0.1.0 targets
+# macOS only (the manifest advertises only macOS), so no other OS is published.
+#
+# The binary embeds internal/webui/generated, so the frontend is built and synced
+# into that directory once in a before-hook (make build-web -> npm ci + npm run
+# build + scripts/embed-web.sh) before any Go build runs.
+version: 2
+
+project_name: herdr-phone
+
+before:
+  hooks:
+    - go mod tidy
+    - make build-web
+
+builds:
+  - id: herdr-phone
+    main: ./cmd/herdr-phone
+    binary: herdr-phone
+    env:
+      - CGO_ENABLED=0
+    flags:
+      - -trimpath
+    ldflags:
+      - -s -w
+    goos:
+      - darwin
+    goarch:
+      - amd64
+      - arm64
+
+archives:
+  - id: default
+    formats:
+      - tar.gz
+    # Must stay in sync with scripts/build.sh (enforced by tests):
+    # herdr-phone_<version>_<os>_<arch>.tar.gz
+    name_template: "{{ .ProjectName }}_{{ .Version }}_{{ .Os }}_{{ .Arch }}"
+    files:
+      - LICENSE
+      - README.md
+
+checksum:
+  name_template: "checksums.txt"
+  algorithm: sha256
+
+sboms:
+  - id: archive
+    artifacts: archive
+
+release:
+  github:
+    owner: matheus3301
+    name: herdr-phone
+  prerelease: auto
+
+changelog:
+  use: github
+  sort: asc

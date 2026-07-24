@@ -1,0 +1,8 @@
+This directory holds the generated production frontend build embedded into the
+binary. The build step copies web/dist into here (adding index.html and the
+assets/ tree) before compiling a release binary.
+
+This committed marker exists only so `//go:embed all:generated` always has at
+least one file to embed in a clean checkout where the frontend has not been
+built. When no index.html is present here, internal/webui.Assets() falls back to
+the committed placeholder shell under dist/ and IsFallback() reports true.

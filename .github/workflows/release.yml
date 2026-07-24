@@ -1,0 +1,142 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - 'v*'
+
+permissions:
+  contents: read
+
+env:
+  GO_VERSION: '1.26.5'
+  NODE_VERSION: '22.23.1'
+
+jobs:
+  verify:
+    name: Verify and gate
+    # macOS runner: the manifest advertises macOS only (so plugin verification
+    # links there) and release binaries are native darwin builds.
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version: ${{ env.GO_VERSION }}
+          check-latest: true
+          cache: true
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: npm
+          cache-dependency-path: web/package-lock.json
+      # web/dist must exist before the Go module compiles (the binary embeds it).
+      - name: Build embedded frontend
+        run: make build-web
+      - name: Require an annotated (or signed) tag
+        run: |
+          set -eu
+          objtype="$(git cat-file -t "$GITHUB_REF_NAME")"
+          echo "tag object type: $objtype"
+          if [ "$objtype" != "tag" ]; then
+            echo "release tags must be annotated or signed tag objects (got $objtype); create with 'git tag -a' or 'git tag -s'"
+            exit 1
+          fi
+      - name: Enforce the tag is on main
+        run: |
+          set -eu
+          git fetch --no-tags origin main
+          if ! git merge-base --is-ancestor "$GITHUB_SHA" origin/main; then
+            echo "release tag commit $GITHUB_SHA is not an ancestor of origin/main"
+            exit 1
+          fi
+          echo "tag commit is on main"
+      - name: Verify tag matches manifest and binary version
+        run: |
+          set -eu
+          tag="${GITHUB_REF_NAME#v}"
+          manifest="$(sed -n 's/^version[[:space:]]*=[[:space:]]*"\([^"]*\)".*/\1/p' herdr-plugin.toml | head -n1)"
+          binver="$(go run ./cmd/herdr-phone version | awk '{print $NF}')"
+          echo "tag=$tag manifest=$manifest binary=$binver"
+          [ "$tag" = "$manifest" ] || { echo "tag v$tag does not match manifest version $manifest"; exit 1; }
+          [ "$tag" = "$binver" ] || { echo "tag v$tag does not match binary version $binver"; exit 1; }
+      - name: Quality gates
+        run: make check
+      - name: Plugin verification against official Herdr v0.7.5
+        run: make verify-plugin
+      - name: GoReleaser config check
+        uses: goreleaser/goreleaser-action@f06c13b6b1a9625abc9e6e439d9c05a8f2190e94 # v7.2.3
+        with:
+          version: '~> v2'
+          args: check
+      - name: Install govulncheck
+        run: go install golang.org/x/vuln/cmd/govulncheck@v1.6.0
+      - name: govulncheck (source)
+        run: |
+          "$(go env GOPATH)/bin/govulncheck" ./...
+      - name: Build release binaries (Go 1.26)
+        uses: goreleaser/goreleaser-action@f06c13b6b1a9625abc9e6e439d9c05a8f2190e94 # v7.2.3
+        with:
+          version: '~> v2'
+          args: build --snapshot --clean
+      - name: Scan the built release binaries
+        run: |
+          set -eu
+          bins="$(find dist -type f -name herdr-phone)"
+          [ -n "$bins" ] || { echo "no release binaries found to scan"; exit 1; }
+          echo "$bins" | while IFS= read -r bin; do
+            [ -n "$bin" ] || continue
+            echo "scanning $bin"
+            "$(go env GOPATH)/bin/govulncheck" -mode=binary "$bin" || exit 1
+          done
+
+  release:
+    name: Build and publish
+    needs: verify
+    runs-on: macos-latest
+    permissions:
+      contents: write      # create the GitHub release and upload assets
+      id-token: write      # keyless (Sigstore/OIDC) signing for provenance
+      attestations: write  # record build-provenance attestations for the artifacts
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version: ${{ env.GO_VERSION }}
+          check-latest: true
+          cache: true
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: npm
+          cache-dependency-path: web/package-lock.json
+      - name: Install syft for SBOM generation
+        uses: anchore/sbom-action/download-syft@e22c389904149dbc22b58101806040fa8d37a610 # v0.24.0
+      # GoReleaser's before-hook builds web/dist; this pre-warms the npm cache.
+      - name: Prime frontend dependencies
+        run: npm ci
+        working-directory: web
+      - name: Run GoReleaser
+        uses: goreleaser/goreleaser-action@f06c13b6b1a9625abc9e6e439d9c05a8f2190e94 # v7.2.3
+        with:
+          version: '~> v2'
+          args: release --clean
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      # Keyless build-provenance attestations for the published archives and the
+      # checksums file, signed via Sigstore/OIDC (no long-lived secret). Users
+      # verify with `gh attestation verify <file> --repo matheus3301/herdr-phone`.
+      # SHA-256 checksum verification via checksums.txt remains mandatory and
+      # independent of this.
+      - name: Attest release artifacts
+        uses: actions/attest-build-provenance@0f67c3f4856b2e3261c31976d6725780e5e4c373 # v4.1.1
+        with:
+          subject-path: |
+            dist/herdr-phone_*.tar.gz
+            dist/checksums.txt

@@ -1,0 +1,51 @@
+id = "matheus3301.phone"
+name = "Herdr Phone"
+version = "0.1.0"
+min_herdr_version = "0.7.5"
+description = "Use your Mac's Herdr session from your phone, over a Cloudflare tunnel"
+platforms = ["macos"]
+
+# Built at install time. Prefers a local Go + Node toolchain and otherwise
+# downloads a checksum-verified release archive. See scripts/build.sh.
+[[build]]
+command = ["sh", "scripts/build.sh"]
+platforms = ["macos"]
+
+# Global actions. There is no default keybinding and no long-running plugin pane;
+# the relay runs as a detached daemon started by `start`.
+
+[[actions]]
+id = "start"
+title = "Phone: Start (named tunnel)"
+contexts = ["global"]
+command = ["./bin/herdr-phone", "start"]
+
+[[actions]]
+id = "start-quick"
+title = "Phone: Start (Quick Tunnel)"
+contexts = ["global"]
+command = ["./bin/herdr-phone", "start", "--quick"]
+
+[[actions]]
+id = "stop"
+title = "Phone: Stop"
+contexts = ["global"]
+command = ["./bin/herdr-phone", "stop"]
+
+[[actions]]
+id = "status"
+title = "Phone: Status"
+contexts = ["global"]
+command = ["./bin/herdr-phone", "status"]
+
+[[actions]]
+id = "setup-link"
+title = "Phone: New pairing link"
+contexts = ["global"]
+command = ["./bin/herdr-phone", "setup-link"]
+
+[[actions]]
+id = "doctor"
+title = "Phone: Doctor"
+contexts = ["global"]
+command = ["./bin/herdr-phone", "doctor"]

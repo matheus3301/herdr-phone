@@ -1,0 +1,46 @@
+# Build output
+/bin/
+/dist/
+
+# Frontend build output (web/dist) and dependencies
+/web/dist/
+/web/node_modules/
+
+# Generated frontend assets synced into the Go embed directory by
+# scripts/embed-web.sh. Only the committed marker is tracked.
+/internal/webui/generated/*
+!/internal/webui/generated/.gitkeep
+
+# Playwright artifacts
+/web/test-results/
+/web/playwright-report/
+/web/.playwright/
+/web/*.tsbuildinfo
+
+# Test and coverage artifacts
+*.out
+coverage.txt
+coverage.html
+*.test
+
+# Downloaded release archives (never commit binaries)
+*.tar.gz
+checksums.txt
+
+# Editor and OS noise
+.DS_Store
+*.swp
+*~
+.idea/
+.vscode/
+.claude/settings.local.json
+
+# Local Herdr verification scratch state
+/.verify-plugin-tmp/
+
+# Local secrets and runtime state — never commit
+config.toml
+*.env
+*.pem
+*.token
+/state/

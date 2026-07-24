@@ -1,0 +1,3 @@
+This marker indicates the embedded assets are the committed placeholder shell,
+not a real frontend build. scripts/build.sh removes this file when it copies the
+real web/dist output into this directory. webui.IsFallback() checks for it.
