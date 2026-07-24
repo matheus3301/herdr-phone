@@ -61,7 +61,7 @@ describe("production run mode", () => {
     const state = await settled(1);
     expect(spy).toHaveBeenCalledTimes(1);
     expect(state.fidelity).toBe("observed");
-    expect(state.runs[0].id).toBe("w1:p1@3");
+    expect(state.runs[0].id).toBe("w1:p1@3#0123456789abcdef");
     expect(state.runs[0].origin).toBe("relay");
     expect(state.runs[0].incarnation).toBe("0123456789abcdef");
     stop();

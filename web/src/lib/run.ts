@@ -147,21 +147,69 @@ export interface Run extends RunKey {
   interactiveReady: boolean;
   workspaceLabel: string;
   tabLabel: string;
-  worktreeBranch: string | null;
-  worktreePath: string | null;
+  /**
+   * The run's git checkout provenance, or null when Herdr resolved none.
+   *
+   * There is no branch: neither `session.snapshot`'s `workspaces[].worktree` nor
+   * the run contract's `worktree` carries one (SPEC §3.1), and a branch name is
+   * not something this app may invent. `label` is the checkout directory name,
+   * derived from the authoritative checkout path — it is what an operator
+   * recognises when several linked worktrees of one repo are open at once.
+   */
+  worktree: RunWorktree | null;
+}
+
+export interface RunWorktree {
+  repoName: string;
+  checkoutPath: string;
+  /** True when this checkout is a linked git worktree rather than the main one. */
+  isLinked: boolean;
+  /** The checkout directory name, for the compact context line. */
+  label: string;
+}
+
+/** The trailing path segment — the checkout directory's own name. */
+function checkoutLabel(path: string): string {
+  const parts = path.split("/").filter(Boolean);
+  return parts.length > 0 ? parts[parts.length - 1] : "";
+}
+
+/**
+ * Build the run's worktree view from a workspace's provenance. The run contract
+ * omits `repo_key`, so only the fields both sources share are modelled here.
+ */
+function worktreeOf(
+  wt: { repoName: string; repoRoot?: string; checkoutPath: string; isLinkedWorktree: boolean } | undefined | null,
+): RunWorktree | null {
+  if (!wt) return null;
+  return {
+    repoName: wt.repoName,
+    checkoutPath: wt.checkoutPath,
+    isLinked: wt.isLinkedWorktree,
+    label: checkoutLabel(wt.checkoutPath) || wt.repoName,
+  };
 }
 
 /**
  * Map one structured-contract run onto the view model.
  *
  * Identity, generation, incarnation, status, and context all come from the
- * relay — the snapshot is consulted only for the worktree *branch*, which the
- * run contract does not carry and which is display text either way.
+ * relay. The snapshot is consulted only as a fallback for checkout provenance,
+ * which the relay projects from the same `workspaces[].worktree` field — so the
+ * two can only agree.
  */
 export function runFromWire(wire: WireRunSummary, snapshot: Snapshot | null): Run {
   const status = normalizeRunStatus(wire.status);
   const workspace = snapshot?.workspaces.find((w) => w.id === wire.workspace_id);
   const agentName = wire.agent_name || wire.display_agent || wire.agent_kind;
+  const wireWorktree = wire.worktree
+    ? {
+        repoName: wire.worktree.repo_name,
+        repoRoot: wire.worktree.repo_root,
+        checkoutPath: wire.worktree.checkout_path,
+        isLinkedWorktree: wire.worktree.is_linked_worktree,
+      }
+    : null;
   return {
     id: wire.run_id,
     origin: "relay",
@@ -180,8 +228,7 @@ export function runFromWire(wire: WireRunSummary, snapshot: Snapshot | null): Ru
     interactiveReady: wire.interactive_ready,
     workspaceLabel: wire.workspace_label || wire.workspace_id,
     tabLabel: wire.tab_label || wire.tab_id,
-    worktreeBranch: workspace?.worktree?.branch ?? null,
-    worktreePath: wire.worktree?.checkout_path ?? workspace?.worktree?.path ?? null,
+    worktree: worktreeOf(wireWorktree ?? workspace?.worktree),
   };
 }
 
@@ -225,8 +272,7 @@ export function buildRuns(snapshot: Snapshot | null): Run[] {
       interactiveReady: agent.interactiveReady,
       workspaceLabel: workspace?.label ?? agent.workspaceId,
       tabLabel: tab?.label ?? agent.tabId,
-      worktreeBranch: workspace?.worktree?.branch ?? null,
-      worktreePath: workspace?.worktree?.path ?? null,
+      worktree: worktreeOf(workspace?.worktree),
     };
   });
 }

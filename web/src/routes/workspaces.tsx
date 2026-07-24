@@ -76,8 +76,10 @@ export function WorkspacesRoute() {
                     {workspace.worktree && (
                       <span className="tabular mt-0.5 flex items-center gap-1.5 text-faint-ink">
                         <GitBranch className="size-3.5 shrink-0" aria-hidden />
-                        <span className="truncate" title={workspace.worktree.path}>
-                          {workspace.worktree.branch ?? shortPath(workspace.worktree.path, 2)}
+                        <span className="truncate" title={workspace.worktree.checkoutPath}>
+                          {workspace.worktree.repoName}
+                          {workspace.worktree.isLinkedWorktree ? " · linked worktree" : ""} ·{" "}
+                          {shortPath(workspace.worktree.checkoutPath, 2)}
                         </span>
                       </span>
                     )}

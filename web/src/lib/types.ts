@@ -15,6 +15,23 @@ export type AgentStatus = (typeof AGENT_STATUSES)[number];
 
 /* ============================================================ wire types === */
 
+/**
+ * `WorkspaceInfo.worktree` — the git checkout provenance Herdr reports for a
+ * workspace, and the ONLY worktree context a `session.snapshot` carries (SPEC
+ * §3.1; `WorkspaceWorktreeInfo` in `herdr api schema --json`, protocol 17).
+ *
+ * Note what is absent: there is **no branch**. A branch is only available from a
+ * separate `worktree.list` call, which the relay does not make, so nothing in
+ * this app may present a branch name as fact.
+ */
+export interface WireWorkspaceWorktree {
+  repo_key: string;
+  repo_name: string;
+  repo_root: string;
+  checkout_path: string;
+  is_linked_worktree: boolean;
+}
+
 export interface WireWorkspace {
   workspace_id: string;
   number: number;
@@ -24,6 +41,8 @@ export interface WireWorkspace {
   tab_count: number;
   active_tab_id: string;
   agent_status: AgentStatus;
+  /** Present when Herdr resolved the workspace to a git checkout. */
+  worktree?: WireWorkspaceWorktree | null;
 }
 
 export interface WireTab {
@@ -110,18 +129,13 @@ export interface WireLayout {
   splits: unknown[];
 }
 
-export interface WireWorktree {
-  path: string;
-  label: string;
-  branch?: string;
-  is_bare: boolean;
-  is_detached: boolean;
-  is_linked_worktree: boolean;
-  is_prunable: boolean;
-  open_workspace_id?: string;
-}
-
-/** herdr.Snapshot — the normalized Herdr topology. */
+/**
+ * herdr.Snapshot — the normalized Herdr topology.
+ *
+ * There is deliberately no top-level `worktrees` array: `SessionSnapshot`
+ * declares none, so the relay no longer carries one either. Worktree context
+ * comes from `workspaces[].worktree`.
+ */
 export interface WireTopology {
   version: string;
   protocol: number;
@@ -133,7 +147,6 @@ export interface WireTopology {
   panes: WirePane[];
   layouts: WireLayout[];
   agents: WireAgent[];
-  worktrees: WireWorktree[];
 }
 
 /** state.Snapshot — carried inside the server envelope's `data` field. */
@@ -334,6 +347,22 @@ export interface WirePaneReadResponse {
 
 /* ============================================================ view types === */
 
+/**
+ * A workspace's git checkout provenance, straight from `workspaces[].worktree`.
+ *
+ * `isLinkedWorktree` is what makes a removal control honest: `worktree.remove`
+ * takes the *workspace* a worktree is open in and git refuses to remove a main
+ * checkout, so a linked worktree is exactly the removable case. There is no
+ * branch here because the snapshot carries none.
+ */
+export interface WorkspaceWorktree {
+  repoKey: string;
+  repoName: string;
+  repoRoot: string;
+  checkoutPath: string;
+  isLinkedWorktree: boolean;
+}
+
 export interface Workspace {
   id: string;
   number: number;
@@ -343,8 +372,8 @@ export interface Workspace {
   tabCount: number;
   paneCount: number;
   agentStatus: AgentStatus;
-  /** Provenance when a worktree is open in this workspace. */
-  worktree?: { path: string; branch: string | null };
+  /** Provenance when Herdr resolved this workspace to a git checkout. */
+  worktree?: WorkspaceWorktree;
 }
 
 export interface Tab {
@@ -394,19 +423,6 @@ export interface Agent {
   interactiveReady: boolean;
 }
 
-export interface Worktree {
-  /** Stable UI key (the backend worktree has no id). */
-  path: string;
-  label: string;
-  branch: string | null;
-  isDetached: boolean;
-  isPrunable: boolean;
-  /** The workspace this worktree is open in, if any. */
-  openWorkspaceId: string | null;
-  /** Removable only when open in a workspace (worktree.remove takes a workspace id). */
-  removable: boolean;
-}
-
 export interface Snapshot {
   /** Envelope version (state seq); advisory. */
   version: number;
@@ -418,7 +434,6 @@ export interface Snapshot {
   tabs: Tab[];
   panes: Pane[];
   agents: Agent[];
-  worktrees: Worktree[];
   focusedWorkspaceId: string | null;
   focusedTabId: string | null;
   focusedPaneId: string | null;

@@ -33,6 +33,20 @@ const COOKIE = "hp_mock_session";
 let clock = 1_780_000_000_000;
 const now = () => clock++;
 
+/**
+ * `WorkspaceInfo.worktree` — the ONLY worktree context `session.snapshot`
+ * carries (`WorkspaceWorktreeInfo` in `herdr api schema --json`, protocol 17).
+ * Note the absence of a branch: there is none anywhere in a snapshot, so the
+ * mock must not supply one either.
+ */
+interface WireWorkspaceWorktree {
+  repo_key: string;
+  repo_name: string;
+  repo_root: string;
+  checkout_path: string;
+  is_linked_worktree: boolean;
+}
+
 interface WireWorkspace {
   workspace_id: string;
   number: number;
@@ -42,6 +56,7 @@ interface WireWorkspace {
   tab_count: number;
   active_tab_id: string;
   agent_status: string;
+  worktree?: WireWorkspaceWorktree;
 }
 interface WireTab {
   tab_id: string;
@@ -93,17 +108,6 @@ interface WireLayout {
   panes: Array<{ pane_id: string; focused: boolean; rect: { x: number; y: number; width: number; height: number } }>;
   splits: unknown[];
 }
-interface WireWorktree {
-  path: string;
-  label: string;
-  branch?: string;
-  is_bare: boolean;
-  is_detached: boolean;
-  is_linked_worktree: boolean;
-  is_prunable: boolean;
-  open_workspace_id?: string;
-}
-
 interface Herd {
   seq: number;
   idSeq: number;
@@ -112,7 +116,6 @@ interface Herd {
   panes: WirePane[];
   agents: WireAgent[];
   layouts: WireLayout[];
-  worktrees: WireWorktree[];
   generations: Record<string, number>;
   focusedWorkspaceId: string;
   focusedTabId: string;
@@ -121,15 +124,36 @@ interface Herd {
 
 const FULL = { x: 0, y: 0, width: 1, height: 1 };
 
+/** Build a workspace's checkout provenance the way Herdr reports it. */
+function worktreeInfo(repoName: string, repoRoot: string, checkoutPath: string, linked: boolean): WireWorkspaceWorktree {
+  return {
+    repo_key: `key:${repoRoot}`,
+    repo_name: repoName,
+    repo_root: repoRoot,
+    checkout_path: checkoutPath,
+    is_linked_worktree: linked,
+  };
+}
+
 /**
  * The seed covers every inbox section — blocked, working, done (Updated), idle,
- * and unknown — plus an empty shell pane and a prunable worktree, so the
- * journeys and the screenshots exercise the real vocabulary.
+ * and unknown — plus an empty shell pane, a linked worktree, and a main checkout,
+ * so the journeys and the screenshots exercise the real vocabulary.
  */
 function seed(): Herd {
   const workspaces: WireWorkspace[] = [
-    { workspace_id: "w1", number: 1, label: "space-api", focused: true, pane_count: 3, tab_count: 2, active_tab_id: "w1:t1", agent_status: "blocked" },
-    { workspace_id: "w2", number: 2, label: "mobile-ui", focused: false, pane_count: 3, tab_count: 1, active_tab_id: "w2:t1", agent_status: "working" },
+    {
+      workspace_id: "w1", number: 1, label: "space-api", focused: true, pane_count: 3, tab_count: 2,
+      active_tab_id: "w1:t1", agent_status: "blocked",
+      worktree: worktreeInfo("space-api", "/Users/dev/code/space-api", "/Users/dev/code/space-api-auth", true),
+    },
+    {
+      workspace_id: "w2", number: 2, label: "mobile-ui", focused: false, pane_count: 3, tab_count: 1,
+      active_tab_id: "w2:t1", agent_status: "working",
+      worktree: worktreeInfo("mobile-ui", "/Users/dev/code/mobile-ui", "/Users/dev/code/mobile-ui", false),
+    },
+    // w3 resolves to no git checkout at all — the `worktree` field is absent, not
+    // null-with-empty-strings, exactly as Go's `omitempty` emits it.
     { workspace_id: "w3", number: 3, label: "infra", focused: false, pane_count: 2, tab_count: 1, active_tab_id: "w3:t1", agent_status: "idle" },
   ];
   const tabs: WireTab[] = [
@@ -161,10 +185,6 @@ function seed(): Herd {
   const layouts: WireLayout[] = [
     { workspace_id: "w1", tab_id: "w1:t1", zoomed: false, area: FULL, focused_pane_id: "w1:p1", panes: [{ pane_id: "w1:p1", focused: true, rect: FULL }, { pane_id: "w1:p2", focused: false, rect: FULL }], splits: [] },
   ];
-  const worktrees: WireWorktree[] = [
-    { path: api, label: "auth-refactor", branch: "auth-refactor", is_bare: false, is_detached: false, is_linked_worktree: true, is_prunable: false, open_workspace_id: "w1" },
-    { path: "/Users/dev/code/experiment", label: "experiment", branch: "experiment", is_bare: false, is_detached: false, is_linked_worktree: true, is_prunable: true },
-  ];
   const generations: Record<string, number> = {
     "w1:p1": 3,
     "w1:p2": 1,
@@ -175,7 +195,7 @@ function seed(): Herd {
     "w3:p1": 1,
     "w3:p2": 1,
   };
-  return { seq: 9, idSeq: 9, workspaces, tabs, panes, agents, layouts, worktrees, generations, focusedWorkspaceId: "w1", focusedTabId: "w1:t1", focusedPaneId: "w1:p1" };
+  return { seq: 9, idSeq: 9, workspaces, tabs, panes, agents, layouts, generations, focusedWorkspaceId: "w1", focusedTabId: "w1:t1", focusedPaneId: "w1:p1" };
 }
 
 let herd = seed();
@@ -192,7 +212,6 @@ function topology() {
     panes: herd.panes,
     layouts: herd.layouts,
     agents: herd.agents,
-    worktrees: herd.worktrees,
   };
 }
 
@@ -275,18 +294,22 @@ function projectRuns() {
       const agent = herd.agents.find((a) => a.pane_id === p.pane_id);
       const workspace = herd.workspaces.find((w) => w.workspace_id === p.workspace_id);
       const tab = herd.tabs.find((t) => t.tab_id === p.tab_id);
-      const worktree = herd.worktrees.find((w) => w.open_workspace_id === p.workspace_id);
+      const worktree = workspace?.worktree;
       const generation = herd.generations[p.pane_id];
       const rawStatus = p.agent_status || agent?.agent_status || "";
       const status = RUN_STATUSES.includes(rawStatus) ? rawStatus : "unknown";
       // `omitempty` on the Go struct: an empty optional field is absent from the
       // wire, not present as "". The browser must cope with either.
       const optional = (key: string, value: string | undefined) => (value ? { [key]: value } : {});
+      const agentIncarnation = incarnation(p.pane_id);
       return {
-        run_id: `${p.pane_id}@${generation}`,
+        // Mirrors internal/state/runs.go runID: pane, generation, AND occupant
+        // digest, so a recycled pane id restarting at generation 1 cannot reuse a
+        // dead run's identity. Opaque to the client either way.
+        run_id: `${p.pane_id}@${generation}#${agentIncarnation}`,
         pane_id: p.pane_id,
         pane_generation: generation,
-        agent_incarnation: incarnation(p.pane_id),
+        agent_incarnation: agentIncarnation,
         workspace_id: p.workspace_id,
         ...optional("workspace_label", workspace?.label),
         tab_id: p.tab_id,
@@ -304,10 +327,12 @@ function projectRuns() {
         ...optional("foreground_cwd", p.foreground_cwd),
         ...(worktree
           ? {
+              // internal/server/runs.go RunWorktree: the workspace's provenance
+              // verbatim, minus repo_key. No branch — there is none to carry.
               worktree: {
-                repo_name: worktree.label,
-                repo_root: worktree.path,
-                checkout_path: worktree.path,
+                repo_name: worktree.repo_name,
+                repo_root: worktree.repo_root,
+                checkout_path: worktree.checkout_path,
                 is_linked_worktree: worktree.is_linked_worktree,
               },
             }
@@ -751,8 +776,13 @@ function dispatch(op: string, params: Record<string, unknown>, requestId: string
       const id = `w${herd.idSeq++}`;
       const tabId = `${id}:t1`;
       const paneId = newPaneId(id);
-      herd.worktrees.push({ path, label: String(params.label || branch), branch, is_bare: false, is_detached: false, is_linked_worktree: true, is_prunable: false, open_workspace_id: id });
-      herd.workspaces.push({ workspace_id: id, number: herd.workspaces.length + 1, label: String(params.label || branch), focused: false, pane_count: 1, tab_count: 1, active_tab_id: tabId, agent_status: "idle" });
+      const repoRoot = String(params.cwd || "/Users/dev/code");
+      herd.workspaces.push({
+        workspace_id: id, number: herd.workspaces.length + 1, label: String(params.label || branch),
+        focused: false, pane_count: 1, tab_count: 1, active_tab_id: tabId, agent_status: "idle",
+        // A created worktree is a linked checkout, so it is removable.
+        worktree: worktreeInfo(repoRoot.split("/").filter(Boolean).pop() || branch, repoRoot, path, true),
+      });
       herd.tabs.push({ tab_id: tabId, workspace_id: id, number: 1, label: "shell", focused: false, pane_count: 1, agent_status: "idle" });
       herd.panes.push({ pane_id: paneId, terminal_id: `term_${herd.idSeq}`, workspace_id: id, tab_id: tabId, focused: false, cwd: path, foreground_cwd: path, title: "zsh", revision: 0 });
       return {
@@ -766,8 +796,15 @@ function dispatch(op: string, params: Record<string, unknown>, requestId: string
     }
     case "worktree.remove":
     case "worktree.remove_force": {
+      // Herdr removes the checkout AND closes the workspace it was open in, so
+      // the provenance disappears with the workspace, not on its own.
       const workspaceId = String(params.worktree_id ?? "");
-      herd.worktrees = herd.worktrees.filter((w) => w.open_workspace_id !== workspaceId);
+      herd.workspaces = herd.workspaces.filter((w) => w.workspace_id !== workspaceId);
+      herd.tabs = herd.tabs.filter((t) => t.workspace_id !== workspaceId);
+      const gone = herd.panes.filter((p) => p.workspace_id === workspaceId).map((p) => p.pane_id);
+      herd.panes = herd.panes.filter((p) => p.workspace_id !== workspaceId);
+      herd.agents = herd.agents.filter((a) => a.workspace_id !== workspaceId);
+      for (const id of gone) delete herd.generations[id];
       return { result: { ok: true, workspace_id: workspaceId } };
     }
     default:
@@ -867,6 +904,15 @@ function boundObservedText(text: string, maxBytes: number): { text: string; trun
   return { text: tail.toString("utf8"), truncated: true };
 }
 
+/** internal/server/runs.go countLines: empty text is zero lines; a trailing
+ * newline terminates the last line rather than starting a new one. */
+function countLines(text: string): number {
+  if (text === "") return 0;
+  let n = 0;
+  for (const ch of text) if (ch === "\n") n++;
+  return text.endsWith("\n") ? n : n + 1;
+}
+
 function runError(res: ServerResponse, status: number, code: string, message: string) {
   // internal/server/errors.go writeError: static message, no retryable flag.
   send(res, status, { error: { code, message } }, { "Cache-Control": "no-store" });
@@ -941,7 +987,9 @@ function handleRunDetail(res: ServerResponse, paneId: string, url: URL): void {
           type: PART_OBSERVED_TERMINAL_OUTPUT,
           source,
           format: "text",
-          lines,
+          // internal/server/runs.go countLines: how many lines came back, NOT the
+          // clamped request. The UI states this as fact, so it must be true.
+          lines: countLines(bounded.text),
           bytes: Buffer.byteLength(bounded.text, "utf8"),
           truncated: bounded.truncated,
           text: bounded.text,

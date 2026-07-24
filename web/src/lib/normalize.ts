@@ -5,7 +5,8 @@
  *   - pane.generation ← snapshot.data.generations[pane_id]
  *   - pane.zoomed / rect ← the tab's layout
  *   - tab.active ← its workspace's active_tab_id
- *   - workspace.worktree ← worktrees[] matched by open_workspace_id
+ *   - workspace.worktree ← workspaces[].worktree, verbatim (SPEC §3.1: the
+ *     snapshot has no top-level worktree array, and no branch anywhere)
  *   - agent.kind ← agent, agent.name ← name||agent, title ← terminal_title_stripped
  *   - ordering ← authoritative array order (index)
  */
@@ -19,8 +20,6 @@ import type {
   WirePairResponse,
   WireRunCapabilities,
   WireSnapshotEnvelope,
-  WireTopology,
-  Worktree,
 } from "./types";
 
 /**
@@ -41,11 +40,6 @@ export function normalizeSnapshot(env: WireSnapshotEnvelope): Snapshot | null {
   if (!topo) return null;
   const generations = data?.generations ?? {};
 
-  const worktreeByWorkspace = new Map<string, WireTopology["worktrees"][number]>();
-  for (const wt of topo.worktrees ?? []) {
-    if (wt.open_workspace_id) worktreeByWorkspace.set(wt.open_workspace_id, wt);
-  }
-
   // Layout lookups: which pane is zoomed per tab.
   const zoomedPaneByTab = new Map<string, string | null>();
   for (const layout of topo.layouts ?? []) {
@@ -53,7 +47,7 @@ export function normalizeSnapshot(env: WireSnapshotEnvelope): Snapshot | null {
   }
 
   const workspaces = (topo.workspaces ?? []).map((w) => {
-    const wt = worktreeByWorkspace.get(w.workspace_id);
+    const wt = w.worktree;
     return {
       id: w.workspace_id,
       number: w.number,
@@ -63,7 +57,17 @@ export function normalizeSnapshot(env: WireSnapshotEnvelope): Snapshot | null {
       tabCount: w.tab_count,
       paneCount: w.pane_count,
       agentStatus: status(w.agent_status),
-      ...(wt ? { worktree: { path: wt.path, branch: wt.branch ?? null } } : {}),
+      ...(wt
+        ? {
+            worktree: {
+              repoKey: wt.repo_key,
+              repoName: wt.repo_name,
+              repoRoot: wt.repo_root,
+              checkoutPath: wt.checkout_path,
+              isLinkedWorktree: wt.is_linked_worktree,
+            },
+          }
+        : {}),
     };
   });
 
@@ -111,16 +115,6 @@ export function normalizeSnapshot(env: WireSnapshotEnvelope): Snapshot | null {
     interactiveReady: a.interactive_ready ?? false,
   }));
 
-  const worktrees: Worktree[] = (topo.worktrees ?? []).map((wt) => ({
-    path: wt.path,
-    label: wt.label,
-    branch: wt.branch ?? null,
-    isDetached: wt.is_detached,
-    isPrunable: wt.is_prunable,
-    openWorkspaceId: wt.open_workspace_id ?? null,
-    removable: !!wt.open_workspace_id,
-  }));
-
   return {
     version: env.version,
     hash: env.hash,
@@ -130,7 +124,6 @@ export function normalizeSnapshot(env: WireSnapshotEnvelope): Snapshot | null {
     tabs,
     panes,
     agents,
-    worktrees,
     focusedWorkspaceId: topo.focused_workspace_id || null,
     focusedTabId: topo.focused_tab_id || null,
     focusedPaneId: topo.focused_pane_id || null,

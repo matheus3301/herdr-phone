@@ -47,7 +47,20 @@ describe("buildRuns", () => {
     expect(claude.id).toBe("w1:p1~g3");
     expect(claude.workspaceLabel).toBe("space-api");
     expect(claude.tabLabel).toBe("auth-refactor");
-    expect(claude.worktreeBranch).toBe("auth-refactor");
+    // The checkout directory name, derived from the authoritative checkout path.
+    // Never a branch: a snapshot carries none.
+    expect(claude.worktree).toEqual({
+      repoName: "space-api",
+      checkoutPath: "/Users/dev/code/space-api-auth",
+      isLinked: true,
+      label: "space-api-auth",
+    });
+  });
+
+  it("reports no worktree for a workspace Herdr resolved to no checkout", () => {
+    const snapshot = makeSnapshot();
+    const opencode = buildRuns(snapshot).find((r) => r.agentName === "opencode")!;
+    expect(opencode.worktree).toBeNull();
   });
 
   it("keeps an agent whose pane has no generation, marked as generation 0", () => {
@@ -132,12 +145,21 @@ describe("runs from the structured contract", () => {
     expect(run.section).toBe("unknown");
   });
 
-  it("keeps the relay's context and fills the worktree branch from the snapshot", () => {
+  it("keeps the relay's context, including the worktree it projects", () => {
     const run = runFromWire(makeWireRun(), snapshot);
     expect(run.workspaceLabel).toBe("space-api");
     expect(run.tabLabel).toBe("auth-refactor");
-    expect(run.worktreeBranch).toBe("auth-refactor");
-    expect(run.worktreePath).toBe("/Users/dev/code/space-api");
+    expect(run.worktree).toEqual({
+      repoName: "space-api",
+      checkoutPath: "/Users/dev/code/space-api-auth",
+      isLinked: true,
+      label: "space-api-auth",
+    });
+  });
+
+  it("falls back to the snapshot's provenance when the relay omits worktree", () => {
+    const run = runFromWire(makeWireRun({ worktree: undefined }), snapshot);
+    expect(run.worktree?.checkoutPath).toBe("/Users/dev/code/space-api-auth");
   });
 
   it("falls back to ids when the relay omits optional labels", () => {

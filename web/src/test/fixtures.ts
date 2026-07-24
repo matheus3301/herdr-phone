@@ -10,7 +10,6 @@ import type {
   Snapshot,
   Tab,
   Workspace,
-  Worktree,
   WirePairResponse,
   WireRunCapabilities,
   WireRunsResponse,
@@ -21,7 +20,19 @@ import type {
 /** A view-model snapshot for component/store tests. */
 export function makeSnapshot(overrides: Partial<Snapshot> = {}): Snapshot {
   const workspaces: Workspace[] = [
-    { id: "w1", number: 1, label: "space-api", focused: true, activeTabId: "w1:t1", tabCount: 2, paneCount: 2, agentStatus: "blocked", worktree: { path: "/Users/dev/code/space-api", branch: "auth-refactor" } },
+    {
+      id: "w1", number: 1, label: "space-api", focused: true, activeTabId: "w1:t1", tabCount: 2, paneCount: 2,
+      agentStatus: "blocked",
+      // A linked worktree: removable, and its checkout directory is what the
+      // compact context line names. No branch — a snapshot carries none.
+      worktree: {
+        repoKey: "key:/Users/dev/code/space-api",
+        repoName: "space-api",
+        repoRoot: "/Users/dev/code/space-api",
+        checkoutPath: "/Users/dev/code/space-api-auth",
+        isLinkedWorktree: true,
+      },
+    },
     { id: "w2", number: 2, label: "mobile-ui", focused: false, activeTabId: "w2:t1", tabCount: 1, paneCount: 1, agentStatus: "working" },
   ];
   const tabs: Tab[] = [
@@ -39,9 +50,6 @@ export function makeSnapshot(overrides: Partial<Snapshot> = {}): Snapshot {
     { paneId: "w1:p1", workspaceId: "w1", tabId: "w1:t1", kind: "claude", name: "claude", title: "Approve this command?", status: "blocked", cwd: "/Users/dev/code/space-api", stateChangeSeq: 30, interactiveReady: true },
     { paneId: "w1:p2", workspaceId: "w1", tabId: "w1:t2", kind: "codex", name: "codex", title: "api tests", status: "done", cwd: "/Users/dev/code/space-api", stateChangeSeq: 10, interactiveReady: false },
   ];
-  const worktrees: Worktree[] = [
-    { path: "/Users/dev/code/space-api", label: "auth-refactor", branch: "auth-refactor", isDetached: false, isPrunable: false, openWorkspaceId: "w1", removable: true },
-  ];
   return {
     version: 1,
     hash: "h1",
@@ -51,7 +59,6 @@ export function makeSnapshot(overrides: Partial<Snapshot> = {}): Snapshot {
     tabs,
     panes,
     agents,
-    worktrees,
     focusedWorkspaceId: "w1",
     focusedTabId: "w1:t1",
     focusedPaneId: "w1:p1",
@@ -125,7 +132,7 @@ export function makeWireRunCapabilities(overrides: Partial<WireRunCapabilities> 
 /** One structured run, matching the fields internal/server/runs.go emits. */
 export function makeWireRun(overrides: Partial<WireRunSummary> = {}): WireRunSummary {
   return {
-    run_id: "w1:p1@3",
+    run_id: "w1:p1@3#0123456789abcdef",
     pane_id: "w1:p1",
     pane_generation: 3,
     agent_incarnation: "0123456789abcdef",
@@ -147,7 +154,7 @@ export function makeWireRun(overrides: Partial<WireRunSummary> = {}): WireRunSum
     worktree: {
       repo_name: "space-api",
       repo_root: "/Users/dev/code/space-api",
-      checkout_path: "/Users/dev/code/space-api",
+      checkout_path: "/Users/dev/code/space-api-auth",
       is_linked_worktree: true,
     },
     revision: 3,
@@ -207,7 +214,17 @@ export function makeWireEnvelope(overrides: Partial<WireSnapshotEnvelope> = {}):
         focused_tab_id: "w1:t1",
         focused_pane_id: "w1:p1",
         workspaces: [
-          { workspace_id: "w1", number: 1, label: "space-api", focused: true, pane_count: 2, tab_count: 1, active_tab_id: "w1:t1", agent_status: "blocked" },
+          {
+            workspace_id: "w1", number: 1, label: "space-api", focused: true, pane_count: 2, tab_count: 1,
+            active_tab_id: "w1:t1", agent_status: "blocked",
+            worktree: {
+              repo_key: "key:/Users/dev/code/space-api",
+              repo_name: "space-api",
+              repo_root: "/Users/dev/code/space-api",
+              checkout_path: "/Users/dev/code/space-api-auth",
+              is_linked_worktree: true,
+            },
+          },
         ],
         tabs: [
           { tab_id: "w1:t1", workspace_id: "w1", number: 1, label: "auth-refactor", focused: true, pane_count: 2, agent_status: "blocked" },
@@ -221,9 +238,6 @@ export function makeWireEnvelope(overrides: Partial<WireSnapshotEnvelope> = {}):
         ],
         agents: [
           { terminal_id: "t1", agent: "claude", name: "claude", agent_status: "blocked", workspace_id: "w1", tab_id: "w1:t1", pane_id: "w1:p1", focused: true, interactive_ready: true, state_change_seq: 30, cwd: "/Users/dev/code/space-api", foreground_cwd: "/Users/dev/code/space-api", terminal_title_stripped: "Approve this command?", revision: 3 },
-        ],
-        worktrees: [
-          { path: "/Users/dev/code/space-api", label: "auth-refactor", branch: "auth-refactor", is_bare: false, is_detached: false, is_linked_worktree: true, is_prunable: false, open_workspace_id: "w1" },
         ],
       },
     },

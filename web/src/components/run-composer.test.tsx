@@ -39,7 +39,7 @@ const field = () => screen.getByLabelText(/instruction for claude/i);
 describe("RunComposer — the target is always visible", () => {
   it("names the agent and its workspace before anything is sent", () => {
     render(<Harness onSubmit={async () => "accepted"} />);
-    expect(screen.getByText(/claude · space-api \/ auth-refactor/)).toBeInTheDocument();
+    expect(screen.getByText(/claude · space-api \/ space-api-auth/)).toBeInTheDocument();
   });
 });
 
@@ -109,6 +109,23 @@ describe("RunComposer — keyboard and IME", () => {
 
     input.dispatchEvent(new CompositionEvent("compositionend", { bubbles: true }));
     await userEvent.keyboard("{Enter}");
+    expect(onSubmit).toHaveBeenCalledTimes(1);
+  });
+
+  // The guard has two halves because browsers disagree: some report
+  // `KeyboardEvent.isComposing`, and the composition-event pair covers the rest.
+  // The test above exercises the ref; this one exercises the flag on its own, so
+  // a browser that never fires compositionstart still cannot lose a candidate.
+  it("does not send when the key event itself reports composing", async () => {
+    const onSubmit = vi.fn(async () => "accepted" as ComposerResult);
+    render(<Harness onSubmit={onSubmit} initial="こんにち" />);
+    const input = field();
+    input.dispatchEvent(
+      new KeyboardEvent("keydown", { key: "Enter", bubbles: true, cancelable: true, isComposing: true }),
+    );
+    expect(onSubmit).not.toHaveBeenCalled();
+
+    input.dispatchEvent(new KeyboardEvent("keydown", { key: "Enter", bubbles: true, cancelable: true }));
     expect(onSubmit).toHaveBeenCalledTimes(1);
   });
 });

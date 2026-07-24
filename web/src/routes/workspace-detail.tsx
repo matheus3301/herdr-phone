@@ -159,10 +159,11 @@ export function WorkspaceDetailRoute() {
     return map;
   }, [snapshot, workspaceId]);
 
-  const worktree = useMemo(
-    () => (snapshot?.worktrees ?? []).find((wt) => wt.openWorkspaceId === workspaceId) ?? null,
-    [snapshot, workspaceId],
-  );
+  // Provenance comes from the workspace itself — the only place a snapshot
+  // carries it. `worktree.remove` takes the *workspace* a worktree is open in,
+  // and git refuses to remove a main checkout, so a linked worktree is exactly
+  // the removable case: the control is offered when, and only when, it can work.
+  const worktree = workspace?.worktree ?? null;
 
   if (!workspace) {
     return (
@@ -193,8 +194,10 @@ export function WorkspaceDetailRoute() {
         {worktree && (
           <p className="tabular flex items-center gap-1.5 text-faint-ink">
             <GitBranch className="size-3.5 shrink-0" aria-hidden />
-            <span className="truncate" title={worktree.path}>
-              {worktree.branch ?? worktree.label} · {shortPath(worktree.path, 3)}
+            <span className="truncate" title={worktree.checkoutPath}>
+              {worktree.repoName}
+              {worktree.isLinkedWorktree ? " · linked worktree" : " · main checkout"} ·{" "}
+              {shortPath(worktree.checkoutPath, 3)}
             </span>
           </p>
         )}
@@ -258,11 +261,11 @@ export function WorkspaceDetailRoute() {
                     </Button>
                   }
                 />
-                {worktree?.removable && (
+                {worktree?.isLinkedWorktree && (
                   <ConfirmAction
                     operation="worktree.remove"
                     resourceId={workspace.id}
-                    label={worktree.branch ?? worktree.label}
+                    label={worktree.repoName}
                     params={{ worktree_id: workspace.id }}
                     escalateOperation="worktree.remove_force"
                     onDone={() => navigate("/workspaces")}

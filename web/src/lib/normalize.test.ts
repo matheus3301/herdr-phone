@@ -30,9 +30,26 @@ describe("normalizeSnapshot", () => {
     expect(snap.tabs[0].active).toBe(true);
   });
 
-  it("derives workspace worktree provenance by open_workspace_id", () => {
+  // Review HIGH 2: `workspaces[].worktree` is the only worktree context a
+  // snapshot carries (SPEC §3.1), and it carries no branch. Consuming it verbatim
+  // is what makes the branch line, the run context, and the removal control real
+  // in production rather than only against the mock.
+  it("takes workspace worktree provenance from workspaces[].worktree", () => {
     const snap = normalizeSnapshot(makeWireEnvelope())!;
-    expect(snap.workspaces[0].worktree?.branch).toBe("auth-refactor");
+    expect(snap.workspaces[0].worktree).toEqual({
+      repoKey: "key:/Users/dev/code/space-api",
+      repoName: "space-api",
+      repoRoot: "/Users/dev/code/space-api",
+      checkoutPath: "/Users/dev/code/space-api-auth",
+      isLinkedWorktree: true,
+    });
+  });
+
+  it("leaves worktree undefined when the workspace resolves to no checkout", () => {
+    const env = makeWireEnvelope();
+    delete env.data!.topology!.workspaces[0].worktree;
+    const snap = normalizeSnapshot(env)!;
+    expect(snap.workspaces[0].worktree).toBeUndefined();
   });
 
   it("maps agent kind/name/title/seq from the wire agent", () => {

@@ -70,7 +70,7 @@ describe("RunInbox — attention-first sections", () => {
     // The agent's name and its kind are both shown, so scope the assertion.
     expect(within(attention).getAllByText("claude")).toHaveLength(2);
     expect(within(attention).getByText("Approve this command?")).toBeInTheDocument();
-    expect(within(attention).getByText(/space-api \/ auth-refactor/)).toBeInTheDocument();
+    expect(within(attention).getByText(/space-api \/ space-api-auth/)).toBeInTheDocument();
   });
 
   it("links a row to its run without touching Herdr focus", async () => {
@@ -90,7 +90,7 @@ describe("RunInbox — production run mode", () => {
     mountWithContract();
 
     const link = await screen.findByRole("link", { name: /claude/ });
-    expect(link).toHaveAttribute("href", "/runs/w1%3Ap1%403");
+    expect(link).toHaveAttribute("href", "/runs/w1%3Ap1%403%230123456789abcdef");
     expect(spy).toHaveBeenCalled();
   });
 
