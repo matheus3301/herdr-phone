@@ -158,3 +158,122 @@ describe("TerminalSocket", () => {
     }
   });
 });
+
+/**
+ * Review MEDIUM 2.
+ *
+ * A stale generation is refused with HTTP 409 *before* the WebSocket upgrade, and
+ * the browser exposes a failed handshake only as onerror → onclose with no status
+ * code. So the socket used to re-dial a permanently invalid `expected_generation`
+ * forever, backoff-capped at 8s, with the UI stuck on "Reattaching…" and no way
+ * to tell "the link dropped" from "the pane you were on no longer exists".
+ */
+describe("TerminalSocket — a handshake that can never succeed", () => {
+  /** A liveness probe over a mutable snapshot stand-in. */
+  function liveness(generations: Record<string, number> | null) {
+    return {
+      revalidate: vi.fn(),
+      generationOf: (id: string) => (generations === null ? null : (generations[id] ?? 0)),
+      set: (next: Record<string, number> | null) => {
+        generations = next;
+      },
+    };
+  }
+
+  it("stops retrying and names the replacement once a snapshot proves it", () => {
+    vi.useFakeTimers();
+    try {
+      const h = handlers();
+      // The pane still exists but now belongs to a different incarnation.
+      const live = liveness({ "w1:p1": 4 });
+      const s = new TerminalSocket("w1:p1", 80, 24, h, live);
+      s.connect({ expectedGeneration: 3 });
+      // The upgrade is refused: onclose without ever having opened.
+      FakeWS.instances[0].close();
+      expect(live.revalidate).toHaveBeenCalled();
+      vi.advanceTimersByTime(60_000);
+
+      expect(FakeWS.instances.length, "no further dials").toBe(1);
+      expect(h.onStatus).toHaveBeenCalledWith("pane-replaced");
+      expect(h.onStatus).not.toHaveBeenCalledWith("open");
+      expect(s.isInvalidated()).toBe(true);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("distinguishes a pane that is gone entirely from one that was recycled", () => {
+    vi.useFakeTimers();
+    try {
+      const h = handlers();
+      // Generation 0: the pane itself is absent from the snapshot.
+      const s = new TerminalSocket("w1:p1", 80, 24, h, liveness({}));
+      s.connect({ expectedGeneration: 3 });
+      FakeWS.instances[0].close();
+      vi.advanceTimersByTime(60_000);
+
+      expect(FakeWS.instances.length).toBe(1);
+      expect(h.onStatus).toHaveBeenCalledWith("agent-ended");
+      expect(h.onStatus).not.toHaveBeenCalledWith("pane-replaced");
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("keeps retrying when the snapshot has not landed — offline is not proof", () => {
+    vi.useFakeTimers();
+    try {
+      const h = handlers();
+      // null: no snapshot at all, which is exactly the phone-offline case. The
+      // poll is failing too, so absence must never be read as "the pane is gone".
+      const s = new TerminalSocket("w1:p1", 80, 24, h, liveness(null));
+      s.connect({ expectedGeneration: 3 });
+      FakeWS.instances[0].close();
+      vi.advanceTimersByTime(60_000);
+
+      expect(FakeWS.instances.length, "ordinary reconnect preserved").toBeGreaterThan(1);
+      expect(h.onStatus).toHaveBeenCalledWith("reconnecting");
+      expect(h.onStatus).not.toHaveBeenCalledWith("pane-replaced");
+      expect(h.onStatus).not.toHaveBeenCalledWith("agent-ended");
+      expect(s.isInvalidated()).toBe(false);
+      for (const ws of FakeWS.instances) expect(ws.url).toContain("expected_generation=3");
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("keeps retrying when the generation still matches — a transient drop", () => {
+    vi.useFakeTimers();
+    try {
+      const h = handlers();
+      const s = new TerminalSocket("w1:p1", 80, 24, h, liveness({ "w1:p1": 3 }));
+      s.connect({ expectedGeneration: 3 });
+      FakeWS.instances[0].close();
+      vi.advanceTimersByTime(60_000);
+
+      expect(FakeWS.instances.length).toBeGreaterThan(1);
+      expect(h.onStatus).not.toHaveBeenCalledWith("pane-replaced");
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("never abandons a socket that had opened — that is an ordinary drop", () => {
+    vi.useFakeTimers();
+    try {
+      const h = handlers();
+      // The generation moved on, but this socket *was* attached: the drop is a
+      // real disconnect and the route's own remount handles the replacement.
+      const s = new TerminalSocket("w1:p1", 80, 24, h, liveness({ "w1:p1": 9 }));
+      s.connect({ expectedGeneration: 3 });
+      FakeWS.instances[0].open();
+      FakeWS.instances[0].close();
+      vi.advanceTimersByTime(60_000);
+
+      expect(FakeWS.instances.length).toBeGreaterThan(1);
+      expect(h.onStatus).not.toHaveBeenCalledWith("pane-replaced");
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+});

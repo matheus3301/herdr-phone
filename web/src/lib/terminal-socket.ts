@@ -10,7 +10,19 @@ import { API_BASE } from "./api";
 import { Backoff } from "./reconnect";
 import type { TerminalClientControl, TerminalServerControl } from "./types";
 
-export type TerminalStatus = "connecting" | "open" | "conflict" | "closed" | "reconnecting";
+/**
+ * `pane-replaced` and `agent-ended` are terminal: the attach can never succeed
+ * again with the generation this socket holds, so retrying is pointless and the
+ * "Reattaching…" spinner would lie forever.
+ */
+export type TerminalStatus =
+  | "connecting"
+  | "open"
+  | "conflict"
+  | "closed"
+  | "reconnecting"
+  | "pane-replaced"
+  | "agent-ended";
 
 export interface TerminalSocketHandlers {
   onData: (bytes: Uint8Array) => void;
@@ -22,6 +34,24 @@ export interface TerminalConnectOptions {
   takeover?: boolean;
   confirmation?: string;
   expectedGeneration?: number;
+}
+
+/**
+ * How the socket learns whether its pane incarnation still exists.
+ *
+ * A stale generation is rejected with HTTP 409 *before* the WebSocket upgrade,
+ * and the browser surfaces a failed handshake only as `onerror` → `onclose` with
+ * no status code. So the socket cannot tell "the link dropped" from "this pane
+ * belongs to someone else now" on its own — it has to ask the snapshot.
+ */
+export interface PaneLiveness {
+  /** Force a fresh snapshot read. */
+  revalidate: () => void;
+  /**
+   * The pane's current lifecycle generation, or 0 when the pane is gone. Null
+   * when no snapshot has landed yet, which must NOT be read as "gone".
+   */
+  generationOf: (paneId: string) => number | null;
 }
 
 function wsUrl(path: string): string {
@@ -36,17 +66,23 @@ export class TerminalSocket {
   private reconnectTimer: ReturnType<typeof setTimeout> | null = null;
   private pingTimer: ReturnType<typeof setInterval> | null = null;
   private connectOpts: TerminalConnectOptions = {};
+  /** True once this socket's pane incarnation is provably gone. */
+  private invalidated = false;
+  /** True while the current socket has never reached `onopen`. */
+  private everOpened = false;
 
   constructor(
     private readonly paneId: string,
     private cols: number,
     private rows: number,
     private readonly handlers: TerminalSocketHandlers,
+    private readonly liveness?: PaneLiveness,
   ) {}
 
   connect(opts: TerminalConnectOptions = {}): void {
     this.connectOpts = opts;
     this.closedByClient = false;
+    this.invalidated = false;
     this.open();
   }
 
@@ -69,8 +105,10 @@ export class TerminalSocket {
     }
     ws.binaryType = "arraybuffer";
     this.ws = ws;
+    this.everOpened = false;
 
     ws.onopen = () => {
+      this.everOpened = true;
       this.backoff.reset();
       this.handlers.onStatus("open");
       this.startPing();
@@ -108,12 +146,48 @@ export class TerminalSocket {
     // (internal/server/terminalroute.go), so carrying it forward is what makes a
     // reconnect land on the same pane incarnation instead of failing or, worse,
     // attaching to a recycled pane.
+    const handshakeFailed = !this.everOpened;
     this.connectOpts = { expectedGeneration: this.connectOpts.expectedGeneration };
     this.handlers.onStatus("reconnecting");
     if (this.reconnectTimer) clearTimeout(this.reconnectTimer);
+    // A handshake that never opened may have been refused for good: the pre-upgrade
+    // generation guard answers 409 and the browser hides the status code. Ask the
+    // snapshot before spending another attempt, but only ever *stop* on proof —
+    // an absent or unchanged snapshot keeps the ordinary reconnect behaviour, so a
+    // phone that is merely offline still retries with backoff.
+    if (handshakeFailed) this.liveness?.revalidate();
     this.reconnectTimer = setTimeout(() => {
-      if (!this.closedByClient) this.open();
+      if (this.closedByClient) return;
+      if (handshakeFailed && this.stopIfPaneMovedOn()) return;
+      this.open();
     }, this.backoff.next());
+  }
+
+  /**
+   * Report a permanently invalid attach, if the snapshot proves one.
+   *
+   * Returns true when retrying was abandoned. Silence — no snapshot yet, or a
+   * generation that still matches — returns false and the caller retries.
+   */
+  private stopIfPaneMovedOn(): boolean {
+    const expected = this.connectOpts.expectedGeneration ?? 0;
+    if (!this.liveness || expected <= 0) return false;
+    const current = this.liveness.generationOf(this.paneId);
+    if (current === null) return false; // no fresh snapshot: not proof of anything
+    if (current === expected) return false; // still the same incarnation: keep trying
+    this.invalidated = true;
+    this.stopPing();
+    if (this.reconnectTimer) clearTimeout(this.reconnectTimer);
+    this.reconnectTimer = null;
+    // Generation 0 means the pane itself is gone; anything else means it was
+    // recycled and now belongs to a different occupant.
+    this.handlers.onStatus(current === 0 ? "agent-ended" : "pane-replaced");
+    return true;
+  }
+
+  /** True once this socket's pane incarnation is provably gone. */
+  isInvalidated(): boolean {
+    return this.invalidated;
   }
 
   sendInput(data: Uint8Array | string): void {
