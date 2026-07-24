@@ -246,6 +246,24 @@ body {
   padding-left: var(--spacing-safe-left);
   padding-right: var(--spacing-safe-right);
 }
+/*
+ * Every shell region needs `min-width: 0`.
+ *
+ * A grid item defaults to `min-width: auto`, so its min-content width becomes a
+ * floor for the track. At 200% text zoom the app bar's own min-content width
+ * (brand + label + link state + Settings) exceeded the phone viewport and forced
+ * the single `1fr` column wider than the screen — which `overflow: hidden` then
+ * clipped, with no scrollbar to bring it back. Every control to the right of the
+ * fold became unreachable, Settings included, and Settings has no alternate
+ * route. Zeroing the floor lets the regions reflow instead (WCAG 1.4.4/1.4.10).
+ */
+.shell-bar,
+.shell-banner,
+.shell-nav,
+.shell-inbox,
+.shell-main {
+  min-width: 0;
+}
 .shell-bar {
   grid-area: bar;
 }
@@ -255,7 +273,6 @@ body {
 .shell-inbox,
 .shell-main {
   grid-area: content;
-  min-width: 0;
   min-height: 0;
 }
 .shell-nav {

@@ -28,9 +28,18 @@ export function RootLayout() {
   // While the software keyboard is up, the composer owns the space above it.
   const hideNav = keyboardOpen(vp);
 
+  // The skip link must land on content that is actually on screen. Below the
+  // wide breakpoint the two columns share one grid cell and only one is
+  // displayed, so at `/` the visible content is the inbox and `#main` is
+  // `display:none` — skipping to it moved focus nowhere and left the next Tab in
+  // the bottom nav, past everything. Both regions carry `tabIndex={-1}` so
+  // activating the link really does move `document.activeElement`, rather than
+  // relying on the browser's sequential-focus-start fallback.
+  const skipTarget = detail ? "#main" : "#inbox";
+
   return (
     <div className="app-shell bg-deck" data-detail={detail}>
-      <a className="skip-link" href="#main">
+      <a className="skip-link" href={skipTarget}>
         Skip to content
       </a>
       <AppBar attention={attention} />
@@ -38,11 +47,11 @@ export function RootLayout() {
         <ConnectionBanner />
       </div>
 
-      <aside className="shell-inbox flex flex-col" aria-label="Agent runs">
+      <aside id="inbox" tabIndex={-1} className="shell-inbox flex flex-col" aria-label="Agent runs">
         <RunInbox />
       </aside>
 
-      <main id="main" className="shell-main flex flex-col">
+      <main id="main" tabIndex={-1} className="shell-main flex flex-col">
         <Outlet />
       </main>
 

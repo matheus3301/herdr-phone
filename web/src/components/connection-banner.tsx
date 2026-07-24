@@ -39,15 +39,19 @@ export function ConnectionBanner() {
         danger ? "bg-flare/15 text-flare" : "bg-brass/15 text-brass",
       )}
     >
+      {/* The detail is the actionable half — "Check both, then retry", "Your
+          device has no network. Herdr keeps running on your Mac." Tailwind's `sm`
+          breakpoint is 640px, so hiding it below that hid it at 320, 390, and 430:
+          every width this product targets. It wraps onto a second line instead. */}
       <span className="min-w-0">
-        <span className="font-medium">{message.title}</span>
-        <span className="ml-1.5 hidden text-muted-ink sm:inline">{message.detail}</span>
+        <span className="font-medium">{message.title}</span>{" "}
+        <span className="text-muted-ink">{message.detail}</span>
       </span>
       <button
         type="button"
         onClick={() => store.revalidate()}
         className={cn(
-          "shrink-0 rounded-log px-2.5 py-1 ring-1 focus-visible:outline-2 focus-visible:outline-brass",
+          "min-h-11 shrink-0 rounded-log px-2.5 py-1 ring-1 focus-visible:outline-2 focus-visible:outline-brass",
           danger ? "ring-flare/50 hover:bg-flare/15" : "ring-brass/50 hover:bg-brass/15",
         )}
       >

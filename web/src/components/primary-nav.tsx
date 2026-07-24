@@ -34,20 +34,28 @@ export function PrimaryNav({ attention }: { attention: number }) {
           end={item.end}
           className={({ isActive }) =>
             cn(
-              "relative flex flex-1 flex-col items-center justify-center gap-1 py-2 text-[11px]",
+              "relative flex min-w-0 flex-1 flex-col items-center justify-center gap-1 py-2 text-[11px]",
               "min-h-14 focus-visible:outline-2 focus-visible:outline-brass focus-visible:outline-offset-[-2px]",
               "lg:size-14 lg:flex-none lg:rounded-log",
               isActive ? "text-brass lg:bg-brass/12" : "text-muted-ink hover:text-mist",
             )
           }
         >
-          <item.icon className="size-[22px]" aria-hidden />
-          <span>{item.label}</span>
+          <item.icon className="size-[22px] shrink-0" aria-hidden />
+          <span className="max-w-full truncate px-1">{item.label}</span>
           {item.label === "Agents" && attention > 0 && (
-            <span
-              className="absolute right-[calc(50%-1.4rem)] top-1.5 size-2 rounded-full bg-flare lg:right-2.5 lg:top-2"
-              aria-hidden
-            />
+            <>
+              <span
+                className="absolute right-[calc(50%-1.4rem)] top-1.5 size-2 rounded-full bg-flare lg:right-2.5 lg:top-2"
+                aria-hidden
+              />
+              {/* The dot is decoration. Assistive technology gets the count, which
+                  is the actual information — the inbox announces an *arrival*
+                  once, but the persistent indicator needs a textual equivalent. */}
+              <span className="sr-only">
+                {attention} {attention === 1 ? "run needs" : "runs need"} you
+              </span>
+            </>
           )}
         </NavLink>
       ))}

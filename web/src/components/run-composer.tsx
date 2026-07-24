@@ -67,7 +67,7 @@ export function RunComposer({
           <span className="text-faint-ink">To</span>
           <span className="tabular truncate text-mist">
             {run.agentName} · {run.workspaceLabel}
-            {run.worktreeBranch ? ` / ${run.worktreeBranch}` : ""}
+            {run.worktree && run.worktree.label !== run.workspaceLabel ? ` / ${run.worktree.label}` : ""}
           </span>
         </p>
 
@@ -117,6 +117,10 @@ export function RunComposer({
           <Button
             variant={danger.danger && armed ? "danger" : "primary"}
             size="icon"
+            // `shrink-0` is load-bearing, not decoration: the textarea beside it is
+            // `w-full`, so without it flex shrinks the primary action of the run
+            // below the 44px minimum target (measured 38.08px on a 390px phone).
+            className="shrink-0"
             onClick={() => void submit()}
             disabled={disabled || pending || !value.trim()}
             aria-label={danger.danger && armed ? "Confirm and send instruction" : "Send instruction"}
