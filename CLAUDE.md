@@ -161,7 +161,7 @@ active Herdr session.
 
 ## Release
 
-`v0.1.0` is published. Cut a release by pushing an **annotated** `vX.Y.Z` tag on a commit
+Cut a release by pushing an **annotated** `vX.Y.Z` tag on a commit
 already on `main`; the version must match `herdr-plugin.toml` and `internal/buildinfo`
 (the workflow verifies tag object, `main` ancestry, and version agreement). GoReleaser
 publishes Darwin arm64/amd64 `.tar.gz`, `checksums.txt`, Syft SBOMs, and a keyless

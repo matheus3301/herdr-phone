@@ -12,7 +12,7 @@ export function setupPWA(): void {
       immediate: true,
       onNeedRefresh() {
         // A future release could surface an in-app "update ready" banner here.
-        // v0.1.0 activates on the next natural reload.
+        // The update activates on the next natural reload.
       },
     });
     void update;

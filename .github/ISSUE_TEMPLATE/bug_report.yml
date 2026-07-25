@@ -47,7 +47,7 @@ body:
     id: version
     attributes:
       label: herdr-phone version
-      placeholder: 0.1.0 (from `herdr-phone version`)
+      placeholder: 0.2.0 (from `herdr-phone version`)
     validations:
       required: true
   - type: input

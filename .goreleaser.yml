@@ -1,5 +1,5 @@
 # GoReleaser configuration. Produces static macOS binaries for amd64/arm64,
-# .tar.gz archives, a checksums.txt, and an SBOM. herdr-phone v0.1.0 targets
+# .tar.gz archives, a checksums.txt, and an SBOM. herdr-phone v0.2.0 targets
 # macOS only (the manifest advertises only macOS), so no other OS is published.
 #
 # The binary embeds internal/webui/generated, so the frontend is built and synced

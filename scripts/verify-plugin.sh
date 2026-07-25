@@ -3,7 +3,7 @@
 # It links the plugin, lists it, and confirms the plugin and its global actions
 # are discovered, without touching the user's active Herdr session.
 #
-# herdr-phone v0.1.0 advertises macOS only, so this is meant to run on macOS
+# herdr-phone v0.2.0 advertises macOS only, so this is meant to run on macOS
 # (CI schedules it on a macOS runner). It uses an installed herdr (HERDR_BIN or,
 # with HERDR_USE_PATH=1, PATH) whose version is verified to be >= 0.7.5 with a
 # working `plugin` command, or downloads the official v0.7.5 binary and verifies

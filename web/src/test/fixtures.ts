@@ -189,7 +189,7 @@ export function makeCapabilities(overrides: Partial<Capabilities> = {}): Capabil
     accessEnforced: false,
     herdrVersion: "0.7.5",
     herdrProtocol: 17,
-    phoneVersion: "0.1.0",
+    phoneVersion: "0.2.0",
     ready: true,
     clients: 1,
     tunnelPublicUrl: "https://example.trycloudflare.com",

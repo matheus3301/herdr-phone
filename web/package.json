@@ -1,9 +1,9 @@
 {
   "name": "herdr-phone-web",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "private": true,
   "type": "module",
-  "description": "Herdr Phone — mobile field console PWA for a live herd of coding agents",
+  "description": "Herdr Phone — agent-first mobile control plane for local coding agents",
   "license": "MIT",
   "scripts": {
     "dev": "vite",

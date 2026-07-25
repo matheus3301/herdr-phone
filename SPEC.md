@@ -1,6 +1,6 @@
 # herdr-phone Product and Implementation Specification
 
-Status: implementation contract for v0.1.0
+Status: implementation contract for v0.2.0
 
 Repository: `https://github.com/matheus3301/herdr-phone`
 
@@ -28,15 +28,15 @@ same as an SSH client, not a read-only dashboard.
 
 - Product and plugin name: `herdr-phone` / **Herdr Phone**.
 - Plugin id: `matheus3301.phone`.
-- Version: `0.1.0`.
-- Host platform for v0.1.0: macOS, amd64 and arm64.
+- Version: `0.2.0`.
+- Host platform for v0.2.0: macOS, amd64 and arm64.
 - Backend: Go 1.26, pinned in both `go.mod` and `mise.toml`.
 - Frontend: React, TypeScript, Vite, Tailwind CSS v4, shadcn/ui primitives, and
   xterm.js, embedded into the Go binary.
 - Front doors: Cloudflare named tunnels and explicitly enabled Quick Tunnels.
 - Edge auth for named tunnels: Cloudflare Access.
 - App auth in all modes: one-time pairing link followed by an HttpOnly session.
-- Herdr scope: one configured/running Herdr session in v0.1.0. Named-session
+- Herdr scope: one configured/running Herdr session in v0.2.0. Named-session
   aggregation is deliberately deferred to avoid surprising blast radius.
 - Remote controls: full safe parity for the operations listed in section 15.
 - Distribution: normal Herdr community plugin plus checksum-verified releases.
@@ -249,7 +249,7 @@ Reject:
 
 Manifest:
 
-- `id = "matheus3301.phone"`, name `Herdr Phone`, version `0.1.0`.
+- `id = "matheus3301.phone"`, name `Herdr Phone`, version `0.2.0`.
 - `min_herdr_version = "0.7.5"`, platforms `macos`.
 - Build command `sh scripts/build.sh`.
 - Global actions: `start`, `start-quick`, `stop`, `status`, `setup-link`, and
@@ -309,7 +309,7 @@ The state directory contains only mode `0600` files and a mode `0600` Unix socke
 - Temporary tunnel-token file: `0600`, deleted immediately after cloudflared has
   read it and become ready.
 
-Do not automatically start at login in v0.1.0. Document an optional future
+Do not automatically start at login in v0.2.0. Document an optional future
 LaunchAgent, but do not generate one silently.
 
 ## 8. Configuration
@@ -742,7 +742,7 @@ same terminal and control shelf. Do not create a separate desktop product.
   tri-state modifier cycle: off, next key, locked.
 - Blocked agents lead the Herd view; working agents follow; quiet agents collapse.
 - Opening an agent shows the terminal before any response controls. Do not offer
-  blind one-tap approvals from push notifications in v0.1.0.
+  blind one-tap approvals from push notifications in v0.2.0.
 - Structural destructive actions use shadcn AlertDialog and a server confirmation
   nonce. Terminal danger-pattern warnings are advisory and require a second tap,
   but never pretend to sandbox an authorized shell.
@@ -896,7 +896,7 @@ statement coverage and enforce a reasonable initial compressed frontend budget.
 - Never auto-install cloudflared. `doctor` gives exact Homebrew/manual guidance.
 - GoReleaser publishes darwin amd64/arm64 archives, checksums, and SBOM.
 - CI runs macOS and Linux compile/test where portable, but the manifest advertises
-  only macOS for v0.1.0.
+  only macOS for v0.2.0.
 - Workflows use least privileges, lockfile installs, immutable version agreement,
   no secret-requiring tests, and no commit mutation.
 - Release tags are annotated or signed, match manifest and binary version, and
@@ -932,7 +932,7 @@ SECURITY.md must explicitly say the tool grants remote shell-equivalent access,
 list supported versions, explain private reporting, document Access JWT and
 pairing defenses, and provide immediate tunnel-token/session revocation steps.
 
-## 21. Non-Goals for v0.1.0
+## 21. Non-Goals for v0.2.0
 
 - Windows host support, native iOS/Android apps, APNs, or background push actions.
 - Multi-user collaboration or simultaneous terminal controllers.

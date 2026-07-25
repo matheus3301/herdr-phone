@@ -1,6 +1,6 @@
 id = "matheus3301.phone"
 name = "Herdr Phone"
-version = "0.1.0"
+version = "0.2.0"
 min_herdr_version = "0.7.5"
 description = "Use your Mac's Herdr session from your phone, over a Cloudflare tunnel"
 platforms = ["macos"]

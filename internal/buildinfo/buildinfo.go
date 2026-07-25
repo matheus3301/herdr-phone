@@ -6,7 +6,7 @@ package buildinfo
 
 // Version is the semantic version of herdr-phone. It must match the version
 // field in herdr-plugin.toml and the release tag (enforced by tests).
-const Version = "0.1.0"
+const Version = "0.2.0"
 
 // Name is the program and binary name.
 const Name = "herdr-phone"

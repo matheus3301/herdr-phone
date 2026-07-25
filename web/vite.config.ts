@@ -22,7 +22,7 @@ export default defineConfig(({ mode }) => ({
   // origin root, so "/" is correct in both production and preview.
   base: "/",
   define: {
-    __APP_VERSION__: JSON.stringify("0.1.0"),
+    __APP_VERSION__: JSON.stringify("0.2.0"),
   },
   // Bind loopback IPv4 so Playwright's 127.0.0.1 probe (and the Go relay's
   // reverse proxy in production) reach the server deterministically.

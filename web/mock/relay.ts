@@ -356,7 +356,7 @@ function capabilities() {
       "worktree.create", "worktree.open", "worktree.remove", "worktree.remove_force",
     ],
     capabilities: { herdr_version: "0.7.5", herdr_protocol: 17, live_handoff: true, agent_kinds: ["claude", "codex", "opencode", "gemini", "cursor"] },
-    status: { version: "0.1.0", protocol: 17, mode: "quick", ready: true, herdr: { healthy: true }, state: { healthy: true }, clients: eventClients.size },
+    status: { version: "0.2.0", protocol: 17, mode: "quick", ready: true, herdr: { healthy: true }, state: { healthy: true }, clients: eventClients.size },
     tunnel: { mode: "quick", public_url: "https://example.trycloudflare.com", health: { healthy: true, detail: "ready" } },
     limits: {
       max_body_bytes: 1048576,
