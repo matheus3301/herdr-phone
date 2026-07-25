@@ -186,7 +186,7 @@ describe("old-relay fallback mode", () => {
     expect(paneSpy).toHaveBeenCalledWith("w1:p1", "recent", RECENT_OUTPUT_LINES, undefined);
     expect(result).toMatchObject({
       kind: "ok",
-      output: { origin: "pane-read", source: "recent", text: "$ ok\n", truncated: false },
+      output: { origin: "pane-read", source: "recent", lines: 1, text: "$ ok\n", truncated: false },
     });
   });
 

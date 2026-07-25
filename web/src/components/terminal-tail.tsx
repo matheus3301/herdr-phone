@@ -50,7 +50,7 @@ export function TerminalTail({
   }, [invalidated, onInvalidated]);
 
   const text = output ? sanitizeBlock(output.text).trimEnd() : "";
-  const lines = output?.lines ?? adapter.outputLines;
+  const lineWord = output?.lines === 1 ? "line" : "lines";
 
   return (
     <section
@@ -74,11 +74,13 @@ export function TerminalTail({
           </Button>
         </div>
         <CollapsibleContent>
-          <p className="px-3 pb-2 text-meta text-muted-ink">
-            {adapter.usesRunContract
-              ? `The last ${lines} lines this pane rendered, as the relay's run contract reports them. Not a transcript, and not the agent's own messages — Herdr does not publish those.`
-              : `The last ${lines} lines this pane rendered. Not a transcript, and not the agent's own messages — Herdr does not publish those yet.`}
-          </p>
+          {output && (
+            <p className="px-3 pb-2 text-meta text-muted-ink">
+              {adapter.usesRunContract
+                ? `The last ${output.lines} ${lineWord} this pane rendered, as the relay's run contract reports them. Not a transcript, and not the agent's own messages — Herdr does not publish those.`
+                : `The last ${output.lines} ${lineWord} this pane rendered. Not a transcript, and not the agent's own messages — Herdr does not publish those yet.`}
+            </p>
+          )}
           <div className="px-3 pb-3">
             {loading && !output ? (
               <Skeleton className="h-24 w-full" />

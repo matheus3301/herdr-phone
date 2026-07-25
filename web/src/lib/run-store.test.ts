@@ -141,7 +141,7 @@ describe("RunStore — observed transitions", () => {
     expect(entry.text).not.toMatch(/success|passed|complete/i);
   });
 
-  it("exposes the last local observation time and bounds the feed", () => {
+  it("records the last local observation time and bounds the feed", () => {
     let t = 0;
     const store = new RunStore(() => t);
     const run = runFor("claude", { status: "working", seq: 0 });
@@ -150,9 +150,9 @@ describe("RunStore — observed transitions", () => {
       t = i * 1000;
       store.observe({ ...run, status: i % 2 ? "blocked" : "working", stateChangeSeq: i });
     }
-    expect(store.get(run.id).observed.length).toBeLessThanOrEqual(60);
-    expect(store.lastSeenAt(run.id)).toBe(100_000);
-    expect(store.lastSeenAt("never-seen")).toBeNull();
+    const observed = store.get(run.id).observed;
+    expect(observed.length).toBeLessThanOrEqual(60);
+    expect(observed.at(-1)?.at).toBe(100_000);
   });
 });
 

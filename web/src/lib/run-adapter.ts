@@ -233,7 +233,9 @@ async function readFromPane(run: RunKey, lines: number, signal?: AbortSignal): P
         origin: "pane-read",
         paneId: res.pane_id || run.paneId,
         source: res.source || FALLBACK_OUTPUT_SOURCE,
-        lines: res.lines ?? lines,
+        // The legacy route echoes the requested bound, not the amount returned.
+        // Count the text so the UI never presents that request as observed fact.
+        lines: countLines(res.content),
         bytes: res.content.length,
         // `pane.read` has no truncation signal; it returns the tail it was asked for.
         truncated: false,
@@ -245,6 +247,12 @@ async function readFromPane(run: RunKey, lines: number, signal?: AbortSignal): P
   } catch (err) {
     return failure(err);
   }
+}
+
+function countLines(text: string): number {
+  if (!text) return 0;
+  const breaks = text.match(/\n/g)?.length ?? 0;
+  return text.endsWith("\n") ? breaks : breaks + 1;
 }
 
 function failure(err: unknown): RunOutputResult {

@@ -219,13 +219,6 @@ export class RunStore {
     this.patch(run.id, { observed, lastSeq: run.stateChangeSeq, lastStatus: run.status });
   }
 
-  /** Most recent local observation for a run, or null when nothing was seen. */
-  lastSeenAt(runId: string): number | null {
-    const observed = this.states.get(runId)?.observed;
-    if (!observed || observed.length === 0) return null;
-    return observed[observed.length - 1].at;
-  }
-
   /** Forget a run's partition (its pane generation is gone). */
   forget(runId: string): void {
     this.states.delete(runId);

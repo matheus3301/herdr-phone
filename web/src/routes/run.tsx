@@ -296,7 +296,6 @@ function RunDetail({ run, onInvalidated }: { run: Run; onInvalidated: () => void
         <div
           ref={scroller}
           onScroll={onScroll}
-          aria-label={`Activity for ${run.agentName}`}
           className="h-full overflow-y-auto px-4 py-4"
         >
           {/* A bounded reading column: agent prose is a document, and a

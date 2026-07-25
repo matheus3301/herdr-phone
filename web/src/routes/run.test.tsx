@@ -145,7 +145,9 @@ describe("Run detail — instruction delivery", () => {
     // load, which is what made these three cases nondeterministic. The delivery
     // states under test do not depend on how the text arrived.
     fireEvent.change(field, { target: { value: "continue" } });
-    await userEvent.click(screen.getByRole("button", { name: /send instruction/i }));
+    const send = screen.getByRole("button", { name: /send instruction/i });
+    await waitFor(() => expect(send).toBeEnabled());
+    await userEvent.click(send);
 
     await waitFor(() => expect(spy).toHaveBeenCalled());
     expect(spy.mock.calls[0][0]).toBe("agent.prompt");
@@ -162,7 +164,9 @@ describe("Run detail — instruction delivery", () => {
     mount();
     const field = await screen.findByLabelText(/instruction for claude/i);
     fireEvent.change(field, { target: { value: "continue" } });
-    await userEvent.click(screen.getByRole("button", { name: /send instruction/i }));
+    const send = screen.getByRole("button", { name: /send instruction/i });
+    await waitFor(() => expect(send).toBeEnabled());
+    await userEvent.click(send);
 
     // Await the dispatch before asserting on what it rendered, so the assertion
     // is not racing the mutation it depends on.
@@ -179,7 +183,9 @@ describe("Run detail — instruction delivery", () => {
     });
     mount();
     fireEvent.change(await screen.findByLabelText(/instruction for claude/i), { target: { value: "deploy" } });
-    await userEvent.click(screen.getByRole("button", { name: /send instruction/i }));
+    const send = screen.getByRole("button", { name: /send instruction/i });
+    await waitFor(() => expect(send).toBeEnabled());
+    await userEvent.click(send);
 
     await waitFor(() => expect(spy).toHaveBeenCalled());
     expect(await screen.findByText("Delivery unknown")).toBeInTheDocument();
@@ -273,7 +279,9 @@ describe("Run detail — production run mode", () => {
     // load, which is what made these three cases nondeterministic. The delivery
     // states under test do not depend on how the text arrived.
     fireEvent.change(field, { target: { value: "continue" } });
-    await userEvent.click(screen.getByRole("button", { name: /send instruction/i }));
+    const send = screen.getByRole("button", { name: /send instruction/i });
+    await waitFor(() => expect(send).toBeEnabled());
+    await userEvent.click(send);
 
     await waitFor(() => expect(spy).toHaveBeenCalled());
     expect(spy.mock.calls[0][0]).toBe("agent.prompt");

@@ -124,6 +124,7 @@ describe("TerminalTail — never a transcript, never a message", () => {
     mount();
     expect(await screen.findByText(/herdr could not read this pane/i)).toBeInTheDocument();
     expect(screen.queryByText(/secret\/path/)).not.toBeInTheDocument();
+    expect(screen.queryByText(/the last \d+ lines?/i)).not.toBeInTheDocument();
   });
 
   it("is explicitly silent to a screen reader, so a refresh is never announced", async () => {
@@ -157,6 +158,7 @@ describe("TerminalTail — the older-relay fallback", () => {
 
     expect(await screen.findByText(/README\.md/)).toBeInTheDocument();
     expect(screen.getByText(/not a transcript/i)).toBeInTheDocument();
+    expect(screen.getByText(/the last 2 lines this pane rendered/i)).toBeInTheDocument();
     // Fails closed to `pane.read`: the contract route is never probed.
     expect(getRun).not.toHaveBeenCalled();
   });
