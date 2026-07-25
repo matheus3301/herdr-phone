@@ -116,7 +116,7 @@ describe("production run mode — reading through the contract", () => {
       parts: [],
     });
     const result = await createRunAdapter(CONTRACT).readRunOutput({ paneId: "w1:p1", generation: 3 });
-    expect(result.kind === "ok" && result.output.text).toBe("");
+    expect(result).toMatchObject({ kind: "ok", output: { text: "", lines: 0 } });
   });
 
   it("never reads through a pane with no live generation", async () => {

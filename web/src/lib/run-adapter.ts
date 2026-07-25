@@ -209,7 +209,7 @@ async function readFromContract(
         origin: "run-contract",
         paneId: res.run?.pane_id || run.paneId,
         source: observed?.source ?? source,
-        lines: observed?.lines ?? lines,
+        lines: observed ? observed.lines : 0,
         bytes: observed?.bytes ?? 0,
         truncated: !!observed?.truncated,
         text: observed?.text ?? "",
