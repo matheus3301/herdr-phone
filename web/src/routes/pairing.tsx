@@ -30,7 +30,7 @@ export function PairingScreen({
         <BrandMark className="size-14" />
         <h1 className="text-xl font-semibold text-mist">Pair this device</h1>
         <p className="text-sm text-muted-ink">
-          Run <code className="font-utility text-tide">herdr-phone setup-link</code> on your Mac and open the
+          Run <code className="tabular text-tide">herdr-phone setup-link</code> on your Mac and open the
           printed link on this phone, or paste it below.
         </p>
       </div>

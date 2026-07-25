@@ -34,11 +34,24 @@ func (e *Error) Error() string {
 	return fmt.Sprintf("%s: %s", e.Code, e.Message)
 }
 
+// UpstreamCode returns the structured failure code so a consumer can preserve
+// the distinction between (for example) a missing resource, a disabled feature,
+// and a transport fault without importing this package or parsing a message. It
+// satisfies the relay's upstream-code contract (see server.UpstreamCoder). The
+// code is a short token from a closed set: either a local transport code
+// declared above or a Herdr server code preserved verbatim.
+func (e *Error) UpstreamCode() string { return e.Code }
+
 // IsCode reports whether err is a *Error with the given code.
 func IsCode(err error, code string) bool {
 	var he *Error
 	return errors.As(err, &he) && he.Code == code
 }
+
+// Client-fault code used for requests this package rejects before, or on behalf
+// of, Herdr. It matches Herdr's own code so a caller need not distinguish where
+// the rejection happened.
+const CodeInvalidParams = "invalid_params"
 
 // maxErrorMessage bounds any message we keep from Herdr or transport errors.
 const maxErrorMessage = 512
@@ -47,6 +60,12 @@ const maxErrorMessage = 512
 func newError(code, msg string) *Error {
 	return &Error{Code: code, Message: sanitizeMessage(msg)}
 }
+
+// NewError builds a sanitized, bounded structured error with the given code. It
+// lets the composition root reject a malformed operation with the same
+// structured shape Herdr uses, so the relay's error classification does not have
+// to flatten a caller's mistake into an internal fault.
+func NewError(code, msg string) *Error { return newError(code, msg) }
 
 // sanitizeMessage removes control characters (including ANSI escape
 // introducers) and bounds length, so error text cannot inject terminal

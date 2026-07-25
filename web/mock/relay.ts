@@ -1,11 +1,26 @@
 /**
- * Mock relay — dev + preview ONLY (SPEC §18 harness). A Vite plugin that stands
- * in for the Go relay so the real production bundle runs against a deterministic
- * in-memory herd. It emits the EXACT backend wire shapes (see internal/server/**,
+ * Mock relay — dev + preview ONLY. A Vite plugin that stands in for the Go relay
+ * so the real production bundle runs against a deterministic in-memory herd. It
+ * is node-side only and never enters the browser bundle.
+ *
+ * It emits the EXACT backend wire shapes (see internal/server/**,
  * internal/state/snapshot.go, internal/herdr/models.go, internal/terminal/
- * protocol.go): the nested snapshot envelope, capabilities document, pair/session
- * identity, `confirmation` nonces, mutation envelope, and the terminal control
- * message vocabulary. It is node-side only and never enters the browser bundle.
+ * protocol.go) AND enforces the same guards:
+ *
+ *   - the mutation allowlist, with each operation's canonical resource field;
+ *   - strict per-operation params, so an unknown field (for example the
+ *     dispatcher-preferred `target`) is rejected exactly as Go's
+ *     DisallowUnknownFields rejects it;
+ *   - a divergent alternate identifier is refused;
+ *   - a mandatory, nonzero, matching `expected_generation` on every pane-scoped
+ *     operation, on confirmations, and on a terminal attach;
+ *   - single-use confirmation nonces bound to operation, resource, generation,
+ *     and params.
+ *
+ * A mock that is laxer than production lets the frontend drift into sending
+ * requests the real relay refuses, which is precisely the class of defect this
+ * rewrite had to repair. If you change a guard in internal/server, change it
+ * here in the same commit.
  */
 import type { Plugin, ViteDevServer, PreviewServer } from "vite";
 import type { IncomingMessage, ServerResponse } from "node:http";
@@ -18,6 +33,20 @@ const COOKIE = "hp_mock_session";
 let clock = 1_780_000_000_000;
 const now = () => clock++;
 
+/**
+ * `WorkspaceInfo.worktree` — the ONLY worktree context `session.snapshot`
+ * carries (`WorkspaceWorktreeInfo` in `herdr api schema --json`, protocol 17).
+ * Note the absence of a branch: there is none anywhere in a snapshot, so the
+ * mock must not supply one either.
+ */
+interface WireWorkspaceWorktree {
+  repo_key: string;
+  repo_name: string;
+  repo_root: string;
+  checkout_path: string;
+  is_linked_worktree: boolean;
+}
+
 interface WireWorkspace {
   workspace_id: string;
   number: number;
@@ -27,6 +56,7 @@ interface WireWorkspace {
   tab_count: number;
   active_tab_id: string;
   agent_status: string;
+  worktree?: WireWorkspaceWorktree;
 }
 interface WireTab {
   tab_id: string;
@@ -78,17 +108,6 @@ interface WireLayout {
   panes: Array<{ pane_id: string; focused: boolean; rect: { x: number; y: number; width: number; height: number } }>;
   splits: unknown[];
 }
-interface WireWorktree {
-  path: string;
-  label: string;
-  branch?: string;
-  is_bare: boolean;
-  is_detached: boolean;
-  is_linked_worktree: boolean;
-  is_prunable: boolean;
-  open_workspace_id?: string;
-}
-
 interface Herd {
   seq: number;
   idSeq: number;
@@ -97,7 +116,6 @@ interface Herd {
   panes: WirePane[];
   agents: WireAgent[];
   layouts: WireLayout[];
-  worktrees: WireWorktree[];
   generations: Record<string, number>;
   focusedWorkspaceId: string;
   focusedTabId: string;
@@ -106,40 +124,78 @@ interface Herd {
 
 const FULL = { x: 0, y: 0, width: 1, height: 1 };
 
+/** Build a workspace's checkout provenance the way Herdr reports it. */
+function worktreeInfo(repoName: string, repoRoot: string, checkoutPath: string, linked: boolean): WireWorkspaceWorktree {
+  return {
+    repo_key: `key:${repoRoot}`,
+    repo_name: repoName,
+    repo_root: repoRoot,
+    checkout_path: checkoutPath,
+    is_linked_worktree: linked,
+  };
+}
+
+/**
+ * The seed covers every inbox section — blocked, working, done (Updated), idle,
+ * and unknown — plus an empty shell pane, a linked worktree, and a main checkout,
+ * so the journeys and the screenshots exercise the real vocabulary.
+ */
 function seed(): Herd {
   const workspaces: WireWorkspace[] = [
-    { workspace_id: "w1", number: 1, label: "space-api", focused: true, pane_count: 2, tab_count: 2, active_tab_id: "w1:t1", agent_status: "blocked" },
-    { workspace_id: "w2", number: 2, label: "mobile-ui", focused: false, pane_count: 2, tab_count: 1, active_tab_id: "w2:t1", agent_status: "working" },
-    { workspace_id: "w3", number: 3, label: "infra", focused: false, pane_count: 1, tab_count: 1, active_tab_id: "w3:t1", agent_status: "idle" },
+    {
+      workspace_id: "w1", number: 1, label: "space-api", focused: true, pane_count: 3, tab_count: 2,
+      active_tab_id: "w1:t1", agent_status: "blocked",
+      worktree: worktreeInfo("space-api", "/Users/dev/code/space-api", "/Users/dev/code/space-api-auth", true),
+    },
+    {
+      workspace_id: "w2", number: 2, label: "mobile-ui", focused: false, pane_count: 3, tab_count: 1,
+      active_tab_id: "w2:t1", agent_status: "working",
+      worktree: worktreeInfo("mobile-ui", "/Users/dev/code/mobile-ui", "/Users/dev/code/mobile-ui", false),
+    },
+    // w3 resolves to no git checkout at all — the `worktree` field is absent, not
+    // null-with-empty-strings, exactly as Go's `omitempty` emits it.
+    { workspace_id: "w3", number: 3, label: "infra", focused: false, pane_count: 2, tab_count: 1, active_tab_id: "w3:t1", agent_status: "idle" },
   ];
   const tabs: WireTab[] = [
     { tab_id: "w1:t1", workspace_id: "w1", number: 1, label: "auth-refactor", focused: true, pane_count: 2, agent_status: "blocked" },
     { tab_id: "w1:t2", workspace_id: "w1", number: 2, label: "tests", focused: false, pane_count: 1, agent_status: "done" },
-    { tab_id: "w2:t1", workspace_id: "w2", number: 1, label: "app", focused: false, pane_count: 2, agent_status: "working" },
-    { tab_id: "w3:t1", workspace_id: "w3", number: 1, label: "shell", focused: false, pane_count: 1, agent_status: "idle" },
+    { tab_id: "w2:t1", workspace_id: "w2", number: 1, label: "app", focused: false, pane_count: 3, agent_status: "working" },
+    { tab_id: "w3:t1", workspace_id: "w3", number: 1, label: "shell", focused: false, pane_count: 2, agent_status: "idle" },
   ];
+  const api = "/Users/dev/code/space-api";
+  const mobile = "/Users/dev/code/mobile-ui";
+  const infra = "/Users/dev/code/infra";
   const panes: WirePane[] = [
-    { pane_id: "w1:p1", terminal_id: "term_1", workspace_id: "w1", tab_id: "w1:t1", focused: true, cwd: "/Users/dev/code/space-api", foreground_cwd: "/Users/dev/code/space-api", agent: "claude", display_agent: "claude", agent_status: "blocked", revision: 3 },
-    { pane_id: "w1:p2", terminal_id: "term_2", workspace_id: "w1", tab_id: "w1:t1", focused: false, cwd: "/Users/dev/code/space-api", foreground_cwd: "/Users/dev/code/space-api", title: "server", revision: 1 },
-    { pane_id: "w1:p3", terminal_id: "term_3", workspace_id: "w1", tab_id: "w1:t2", focused: false, cwd: "/Users/dev/code/space-api", foreground_cwd: "/Users/dev/code/space-api", agent: "codex", display_agent: "codex", agent_status: "done", revision: 2 },
-    { pane_id: "w2:p1", terminal_id: "term_4", workspace_id: "w2", tab_id: "w2:t1", focused: false, cwd: "/Users/dev/code/mobile-ui", foreground_cwd: "/Users/dev/code/mobile-ui", agent: "opencode", display_agent: "opencode", agent_status: "working", revision: 5 },
-    { pane_id: "w2:p2", terminal_id: "term_5", workspace_id: "w2", tab_id: "w2:t1", focused: false, cwd: "/Users/dev/code/mobile-ui", foreground_cwd: "/Users/dev/code/mobile-ui", title: "vite", revision: 1 },
-    { pane_id: "w3:p1", terminal_id: "term_6", workspace_id: "w3", tab_id: "w3:t1", focused: false, cwd: "/Users/dev/code/infra", foreground_cwd: "/Users/dev/code/infra", title: "zsh", revision: 1 },
+    { pane_id: "w1:p1", terminal_id: "term_1", workspace_id: "w1", tab_id: "w1:t1", focused: true, cwd: api, foreground_cwd: api, agent: "claude", display_agent: "claude", agent_status: "blocked", revision: 3 },
+    { pane_id: "w1:p2", terminal_id: "term_2", workspace_id: "w1", tab_id: "w1:t1", focused: false, cwd: api, foreground_cwd: api, title: "server", revision: 1 },
+    { pane_id: "w1:p3", terminal_id: "term_3", workspace_id: "w1", tab_id: "w1:t2", focused: false, cwd: api, foreground_cwd: api, agent: "codex", display_agent: "codex", agent_status: "done", revision: 2 },
+    { pane_id: "w2:p1", terminal_id: "term_4", workspace_id: "w2", tab_id: "w2:t1", focused: false, cwd: mobile, foreground_cwd: mobile, agent: "opencode", display_agent: "opencode", agent_status: "working", revision: 5 },
+    { pane_id: "w2:p2", terminal_id: "term_5", workspace_id: "w2", tab_id: "w2:t1", focused: false, cwd: mobile, foreground_cwd: mobile, title: "vite", revision: 1 },
+    { pane_id: "w2:p3", terminal_id: "term_7", workspace_id: "w2", tab_id: "w2:t1", focused: false, cwd: mobile, foreground_cwd: mobile, agent: "cursor", display_agent: "cursor", agent_status: "unknown", revision: 1 },
+    { pane_id: "w3:p1", terminal_id: "term_6", workspace_id: "w3", tab_id: "w3:t1", focused: false, cwd: infra, foreground_cwd: infra, title: "zsh", revision: 1 },
+    { pane_id: "w3:p2", terminal_id: "term_8", workspace_id: "w3", tab_id: "w3:t1", focused: false, cwd: infra, foreground_cwd: infra, agent: "gemini", display_agent: "gemini", agent_status: "idle", revision: 1 },
   ];
   const agents: WireAgent[] = [
-    { terminal_id: "term_1", agent: "claude", name: "claude", agent_status: "blocked", workspace_id: "w1", tab_id: "w1:t1", pane_id: "w1:p1", focused: true, interactive_ready: true, state_change_seq: 30, cwd: "/Users/dev/code/space-api", foreground_cwd: "/Users/dev/code/space-api", terminal_title_stripped: "Approve this command?", revision: 3 },
-    { terminal_id: "term_4", agent: "opencode", name: "opencode", agent_status: "working", workspace_id: "w2", tab_id: "w2:t1", pane_id: "w2:p1", focused: false, interactive_ready: true, state_change_seq: 20, cwd: "/Users/dev/code/mobile-ui", foreground_cwd: "/Users/dev/code/mobile-ui", terminal_title_stripped: "Refactoring mobile UI", revision: 5 },
-    { terminal_id: "term_3", agent: "codex", name: "codex", agent_status: "done", workspace_id: "w1", tab_id: "w1:t2", pane_id: "w1:p3", focused: false, interactive_ready: false, state_change_seq: 10, cwd: "/Users/dev/code/space-api", foreground_cwd: "/Users/dev/code/space-api", terminal_title_stripped: "api tests", revision: 2 },
+    { terminal_id: "term_1", agent: "claude", name: "claude", agent_status: "blocked", workspace_id: "w1", tab_id: "w1:t1", pane_id: "w1:p1", focused: true, interactive_ready: true, state_change_seq: 40, cwd: api, foreground_cwd: api, terminal_title_stripped: "Approve this command?", revision: 3 },
+    { terminal_id: "term_4", agent: "opencode", name: "opencode", agent_status: "working", workspace_id: "w2", tab_id: "w2:t1", pane_id: "w2:p1", focused: false, interactive_ready: true, state_change_seq: 30, cwd: mobile, foreground_cwd: mobile, terminal_title_stripped: "Refactoring mobile navigation", revision: 5 },
+    { terminal_id: "term_3", agent: "codex", name: "codex", agent_status: "done", workspace_id: "w1", tab_id: "w1:t2", pane_id: "w1:p3", focused: false, interactive_ready: false, state_change_seq: 20, cwd: api, foreground_cwd: api, terminal_title_stripped: "api tests", revision: 2 },
+    { terminal_id: "term_8", agent: "gemini", name: "gemini", agent_status: "idle", workspace_id: "w3", tab_id: "w3:t1", pane_id: "w3:p2", focused: false, interactive_ready: true, state_change_seq: 10, cwd: infra, foreground_cwd: infra, terminal_title_stripped: "waiting", revision: 1 },
+    { terminal_id: "term_7", agent: "cursor", name: "cursor", agent_status: "unknown", workspace_id: "w2", tab_id: "w2:t1", pane_id: "w2:p3", focused: false, interactive_ready: false, state_change_seq: 5, cwd: mobile, foreground_cwd: mobile, terminal_title_stripped: "", revision: 1 },
   ];
   const layouts: WireLayout[] = [
     { workspace_id: "w1", tab_id: "w1:t1", zoomed: false, area: FULL, focused_pane_id: "w1:p1", panes: [{ pane_id: "w1:p1", focused: true, rect: FULL }, { pane_id: "w1:p2", focused: false, rect: FULL }], splits: [] },
   ];
-  const worktrees: WireWorktree[] = [
-    { path: "/Users/dev/code/space-api", label: "auth-refactor", branch: "auth-refactor", is_bare: false, is_detached: false, is_linked_worktree: true, is_prunable: false, open_workspace_id: "w1" },
-    { path: "/Users/dev/code/experiment", label: "experiment", branch: "experiment", is_bare: false, is_detached: false, is_linked_worktree: true, is_prunable: true },
-  ];
-  const generations: Record<string, number> = { "w1:p1": 3, "w1:p2": 1, "w1:p3": 2, "w2:p1": 5, "w2:p2": 1, "w3:p1": 1 };
-  return { seq: 7, idSeq: 7, workspaces, tabs, panes, agents, layouts, worktrees, generations, focusedWorkspaceId: "w1", focusedTabId: "w1:t1", focusedPaneId: "w1:p1" };
+  const generations: Record<string, number> = {
+    "w1:p1": 3,
+    "w1:p2": 1,
+    "w1:p3": 2,
+    "w2:p1": 5,
+    "w2:p2": 1,
+    "w2:p3": 1,
+    "w3:p1": 1,
+    "w3:p2": 1,
+  };
+  return { seq: 9, idSeq: 9, workspaces, tabs, panes, agents, layouts, generations, focusedWorkspaceId: "w1", focusedTabId: "w1:t1", focusedPaneId: "w1:p1" };
 }
 
 let herd = seed();
@@ -156,13 +212,137 @@ function topology() {
     panes: herd.panes,
     layouts: herd.layouts,
     agents: herd.agents,
-    worktrees: herd.worktrees,
   };
 }
 
 function envelope() {
   const data = { seq: herd.seq, hash: `h${herd.seq}`, topology: topology(), generations: herd.generations };
   return { version: herd.seq, hash: `h${herd.seq}`, data, updated_at: new Date(clock).toISOString() };
+}
+
+/* ------------------------------------------- structured run contract (§12.1) */
+
+/**
+ * The run contract's server-side bounds and switches. `runContract.supported`
+ * models an OLDER relay when false: `/capabilities` then omits `runs` entirely
+ * and both run routes 404, which is exactly what the browser must fail closed
+ * against. `maxRuns` is lowered by a test hook to exercise list truncation.
+ */
+const runContract = {
+  supported: true,
+  contractVersion: 1,
+  maxOutputLines: 400,
+  maxOutputBytes: 65_536,
+  maxRuns: 200,
+};
+
+const RUN_CONTRACT_VERSION = 1;
+const PART_OBSERVED_TERMINAL_OUTPUT = "observed_terminal_output";
+const DEFAULT_RUN_OUTPUT_LINES = 200;
+const RUN_OUTPUT_SOURCES = ["recent", "recent-unwrapped", "visible"];
+
+/** Mirrors internal/server/runs.go runCapabilities: every semantic flag false. */
+function runCapabilities() {
+  return {
+    contract_version: RUN_CONTRACT_VERSION,
+    supported: true,
+    structured_messages: false,
+    structured_tool_calls: false,
+    structured_interactions: false,
+    structured_diffs: false,
+    structured_tests: false,
+    structured_plans: false,
+    observed_terminal_output: true,
+    part_types: [PART_OBSERVED_TERMINAL_OUTPUT],
+    output_sources: RUN_OUTPUT_SOURCES,
+    max_output_bytes: runContract.maxOutputBytes,
+    max_output_lines: runContract.maxOutputLines,
+    max_runs: runContract.maxRuns,
+  };
+}
+
+/** A 16-hex-character digest of the pane's occupant, as internal/state does. */
+function incarnation(paneId: string): string {
+  const pane = herd.panes.find((p) => p.pane_id === paneId);
+  const agent = herd.agents.find((a) => a.pane_id === paneId);
+  const fingerprint = `${pane?.terminal_id ?? ""}|${pane?.agent ?? agent?.agent ?? ""}|${agent?.name ?? ""}|${herd.generations[paneId] ?? 0}`;
+  let h1 = 0x811c9dc5;
+  let h2 = 0x01000193;
+  for (let i = 0; i < fingerprint.length; i++) {
+    h1 = Math.imul(h1 ^ fingerprint.charCodeAt(i), 0x01000193) >>> 0;
+    h2 = Math.imul(h2 + fingerprint.charCodeAt(i), 0x85ebca6b) >>> 0;
+  }
+  return (h1.toString(16).padStart(8, "0") + h2.toString(16).padStart(8, "0")).slice(0, 16);
+}
+
+const RUN_STATUSES = ["idle", "working", "blocked", "done", "unknown"];
+
+/**
+ * Project the herd into runs exactly as internal/state/runs.go does: an empty
+ * shell pane is not a run, a pane with no live generation is not addressable and
+ * so is not a run, an unrecognized status reads as `unknown`, and the list is
+ * ordered by pane id.
+ */
+function projectRuns() {
+  const runs = herd.panes
+    .filter((p) => {
+      const agent = herd.agents.find((a) => a.pane_id === p.pane_id);
+      if (!p.agent && !agent) return false;
+      return herd.generations[p.pane_id] !== undefined;
+    })
+    .map((p) => {
+      const agent = herd.agents.find((a) => a.pane_id === p.pane_id);
+      const workspace = herd.workspaces.find((w) => w.workspace_id === p.workspace_id);
+      const tab = herd.tabs.find((t) => t.tab_id === p.tab_id);
+      const worktree = workspace?.worktree;
+      const generation = herd.generations[p.pane_id];
+      const rawStatus = p.agent_status || agent?.agent_status || "";
+      const status = RUN_STATUSES.includes(rawStatus) ? rawStatus : "unknown";
+      // `omitempty` on the Go struct: an empty optional field is absent from the
+      // wire, not present as "". The browser must cope with either.
+      const optional = (key: string, value: string | undefined) => (value ? { [key]: value } : {});
+      const agentIncarnation = incarnation(p.pane_id);
+      return {
+        // Mirrors internal/state/runs.go runID: pane, generation, AND occupant
+        // digest, so a recycled pane id restarting at generation 1 cannot reuse a
+        // dead run's identity. Opaque to the client either way.
+        run_id: `${p.pane_id}@${generation}#${agentIncarnation}`,
+        pane_id: p.pane_id,
+        pane_generation: generation,
+        agent_incarnation: agentIncarnation,
+        workspace_id: p.workspace_id,
+        ...optional("workspace_label", workspace?.label),
+        tab_id: p.tab_id,
+        ...optional("tab_label", tab?.label),
+        terminal_id: p.terminal_id,
+        agent_kind: p.agent || agent?.agent || "",
+        ...optional("agent_name", agent?.name),
+        ...optional("display_agent", p.display_agent),
+        ...optional("title", p.title || agent?.terminal_title_stripped),
+        status,
+        interactive_ready: agent?.interactive_ready ?? false,
+        launch_pending: false,
+        focused: p.focused,
+        ...optional("cwd", p.cwd),
+        ...optional("foreground_cwd", p.foreground_cwd),
+        ...(worktree
+          ? {
+              // internal/server/runs.go RunWorktree: the workspace's provenance
+              // verbatim, minus repo_key. No branch — there is none to carry.
+              worktree: {
+                repo_name: worktree.repo_name,
+                repo_root: worktree.repo_root,
+                checkout_path: worktree.checkout_path,
+                is_linked_worktree: worktree.is_linked_worktree,
+              },
+            }
+          : {}),
+        revision: p.revision,
+        state_change_seq: agent?.state_change_seq ?? 0,
+      };
+    });
+  runs.sort((a, b) => (a.pane_id < b.pane_id ? -1 : a.pane_id > b.pane_id ? 1 : 0));
+  return runs;
 }
 
 function capabilities() {
@@ -176,17 +356,37 @@ function capabilities() {
       "worktree.create", "worktree.open", "worktree.remove", "worktree.remove_force",
     ],
     capabilities: { herdr_version: "0.7.5", herdr_protocol: 17, live_handoff: true, agent_kinds: ["claude", "codex", "opencode", "gemini", "cursor"] },
-    status: { version: "0.1.0", protocol: 17, mode: "quick", ready: true, herdr: { healthy: true }, state: { healthy: true }, clients: eventClients.size },
+    status: { version: "0.2.0", protocol: 17, mode: "quick", ready: true, herdr: { healthy: true }, state: { healthy: true }, clients: eventClients.size },
     tunnel: { mode: "quick", public_url: "https://example.trycloudflare.com", health: { healthy: true, detail: "ready" } },
-    limits: { max_body_bytes: 1048576, max_pane_read_lines: 5000, confirmation_ttl_seconds: 30 },
+    limits: {
+      max_body_bytes: 1048576,
+      max_pane_read_lines: 5000,
+      confirmation_ttl_seconds: 30,
+      ...(runContract.supported
+        ? {
+            max_run_output_lines: runContract.maxOutputLines,
+            max_run_output_bytes: runContract.maxOutputBytes,
+            max_runs: runContract.maxRuns,
+          }
+        : {}),
+    },
+    // An older relay has no `runs` document at all, and the browser must fail
+    // closed to snapshot + pane.read when it is absent.
+    ...(runContract.supported ? { runs: runCapabilities() } : {}),
   };
 }
 
-// Test-only outage switch: when on, the events socket is closed + refuses
-// reconnects and /snapshot returns 503, simulating a REAL disconnect (not a
-// network flag that leaves the socket OPEN). Lets e2e exercise the readyState-
-// based health logic deterministically across browsers.
+// Test-only outage switch: the events socket closes, refuses reconnects, and
+// /snapshot returns 503 — a REAL disconnect, not a flag that leaves the socket
+// OPEN, so e2e can exercise the readyState-based health logic deterministically.
 let outage = false;
+
+/**
+ * Test-only fault injection. `failNext` makes the named operation fail once with
+ * a chosen status/code; `uncertainNext` makes it fail once as a *retryable*
+ * error, which is how the relay reports "Herdr may or may not have acted".
+ */
+const failNext = new Map<string, { status: number; code: string; message: string; retryable: boolean }>();
 
 const eventClients = new Set<WebSocket>();
 function broadcast() {
@@ -195,111 +395,270 @@ function broadcast() {
   for (const ws of eventClients) if (ws.readyState === ws.OPEN) ws.send(msg);
 }
 
+/* ---------------------------------------------------------- the allowlist */
+
+interface OpSpec {
+  /** Canonical params field naming the target resource. */
+  resourceField: "" | "workspace_id" | "tab_id" | "pane_id" | "worktree_id";
+  /** An identifier the real dispatcher would prefer; a divergent value is refused. */
+  altResourceField?: string;
+  requiresConfirmation?: boolean;
+  /** Exactly the fields internal/integration/mutate.go decodes for this op. */
+  fields: string[];
+}
+
+/** Mirrors internal/server/mutations.go `operations` + mutate.go's param structs. */
+const OPERATIONS: Record<string, OpSpec> = {
+  "workspace.create": { resourceField: "", fields: ["cwd", "label", "env", "focus"] },
+  "workspace.focus": { resourceField: "workspace_id", fields: ["workspace_id"] },
+  "workspace.rename": { resourceField: "workspace_id", fields: ["workspace_id", "label"] },
+  "workspace.close": { resourceField: "workspace_id", requiresConfirmation: true, fields: ["workspace_id"] },
+
+  "tab.create": { resourceField: "", fields: ["workspace_id", "cwd", "label", "env", "focus"] },
+  "tab.focus": { resourceField: "tab_id", fields: ["tab_id"] },
+  "tab.rename": { resourceField: "tab_id", fields: ["tab_id", "label"] },
+  "tab.move": { resourceField: "tab_id", fields: ["tab_id", "insert_index"] },
+  "tab.close": { resourceField: "tab_id", requiresConfirmation: true, fields: ["tab_id"] },
+
+  "pane.focus": { resourceField: "pane_id", fields: ["pane_id"] },
+  "pane.split": { resourceField: "pane_id", fields: ["pane_id", "direction", "ratio", "cwd", "env", "focus"] },
+  "pane.resize": { resourceField: "pane_id", fields: ["pane_id", "direction", "amount"] },
+  "pane.zoom": { resourceField: "pane_id", fields: ["pane_id", "mode"] },
+  "pane.swap": { resourceField: "pane_id", fields: ["pane_id", "target_pane_id"] },
+  "pane.move": { resourceField: "pane_id", fields: ["pane_id", "focus", "destination"] },
+  "pane.rename": { resourceField: "pane_id", fields: ["pane_id", "label"] },
+  "pane.close": { resourceField: "pane_id", requiresConfirmation: true, fields: ["pane_id"] },
+
+  // The dispatcher prefers `target` over `pane_id` when present, so a divergent
+  // `target` is refused. mutate.go does not decode `target` at all, so any value
+  // is also a strict-params violation — both guards are modelled.
+  "agent.focus": { resourceField: "pane_id", altResourceField: "target", fields: ["pane_id"] },
+  "agent.prompt": { resourceField: "pane_id", altResourceField: "target", fields: ["pane_id", "text"] },
+  "agent.send_keys": { resourceField: "pane_id", altResourceField: "target", fields: ["pane_id", "keys"] },
+  "agent.rename": { resourceField: "pane_id", altResourceField: "target", fields: ["pane_id", "name"] },
+  "agent.start": { resourceField: "pane_id", fields: ["pane_id", "kind", "name", "args"] },
+
+  "worktree.create": { resourceField: "", fields: ["workspace_id", "cwd", "branch", "base", "path", "label", "focus"] },
+  "worktree.open": { resourceField: "", fields: ["workspace_id", "cwd", "branch", "path", "label", "focus"] },
+  "worktree.remove": { resourceField: "worktree_id", altResourceField: "workspace_id", requiresConfirmation: true, fields: ["worktree_id"] },
+  "worktree.remove_force": { resourceField: "worktree_id", altResourceField: "workspace_id", requiresConfirmation: true, fields: ["worktree_id"] },
+};
+
+/** terminal.takeover is confirmable but is not a mutation. */
+const CONFIRMABLE: Record<string, { resourceField: string; altResourceField?: string }> = {
+  "workspace.close": { resourceField: "workspace_id" },
+  "tab.close": { resourceField: "tab_id" },
+  "pane.close": { resourceField: "pane_id" },
+  "worktree.remove": { resourceField: "worktree_id", altResourceField: "workspace_id" },
+  "worktree.remove_force": { resourceField: "worktree_id", altResourceField: "workspace_id" },
+  "terminal.takeover": { resourceField: "pane_id" },
+};
+
+const generationChecked = (resourceField: string) => resourceField === "pane_id";
+
+function canonicalJSON(value: unknown): string {
+  if (value === null || typeof value !== "object") return JSON.stringify(value ?? null);
+  if (Array.isArray(value)) return `[${value.map(canonicalJSON).join(",")}]`;
+  const entries = Object.entries(value as Record<string, unknown>).sort(([a], [b]) => (a < b ? -1 : a > b ? 1 : 0));
+  return `{${entries.map(([k, v]) => `${JSON.stringify(k)}:${canonicalJSON(v)}`).join(",")}}`;
+}
+
 /* ------------------------------------------------------------- confirmations */
-const nonces = new Map<string, { operation: string; resource: string; expires: number }>();
-function issueNonce(operation: string, resource: string) {
+
+interface Nonce {
+  operation: string;
+  resource: string;
+  generation: number;
+  paramsHash: string;
+  expires: number;
+}
+const nonces = new Map<string, Nonce>();
+
+function issueNonce(operation: string, resource: string, generation: number, params: unknown) {
   const confirmation = `cnf-${operation}-${resource}-${now()}`;
-  nonces.set(confirmation, { operation, resource, expires: Date.now() + 30_000 });
+  nonces.set(confirmation, {
+    operation,
+    resource,
+    generation,
+    paramsHash: canonicalJSON(params ?? {}),
+    expires: Date.now() + 30_000,
+  });
   return { confirmation, expires_unix_ms: Date.now() + 30_000 };
 }
-function consumeNonce(confirmation: string, operation: string, resource: string): boolean {
-  const n = nonces.get(confirmation);
-  if (!n || n.operation !== operation || n.expires < Date.now()) return false;
-  if (n.resource && resource && n.resource !== resource) return false;
-  nonces.delete(confirmation);
-  return true;
+
+function consumeNonce(token: string, operation: string, resource: string, generation: number, params: unknown): boolean {
+  const nonce = nonces.get(token);
+  if (!nonce) return false;
+  const ok =
+    nonce.operation === operation &&
+    nonce.resource === resource &&
+    nonce.generation === generation &&
+    nonce.paramsHash === canonicalJSON(params ?? {}) &&
+    nonce.expires >= Date.now();
+  // Single use either way: a mismatched attempt burns the token, exactly as the
+  // server's consume-on-attempt semantics do.
+  nonces.delete(token);
+  return ok;
 }
 
 /* ---------------------------------------------------------------- mutations */
-const idempotency = new Map<string, unknown>();
-const CONFIRMABLE = new Set(["workspace.close", "tab.close", "pane.close", "worktree.remove", "worktree.remove_force"]);
 
-function newPaneId(ws: string) {
-  const id = `${ws}:p${herd.idSeq++}`;
+const idempotency = new Map<string, unknown>();
+
+function errPayload(requestId: string, code: string, message: string, retryable = false) {
+  return { request_id: requestId, error: { code, message, retryable } };
+}
+
+function newPaneId(workspaceId: string) {
+  const id = `${workspaceId}:p${herd.idSeq++}`;
   herd.generations[id] = 1;
   return id;
 }
 
 function applyMutation(body: Record<string, unknown>): { status: number; payload: unknown } {
   const requestId = String(body.request_id ?? "");
-  if (requestId && idempotency.has(requestId)) return { status: 200, payload: idempotency.get(requestId) };
+  if (!requestId) return { status: 400, payload: errPayload("", "bad_request", "missing request id") };
+
   const op = String(body.operation ?? "");
+  const spec = OPERATIONS[op];
+  if (!spec) return { status: 400, payload: errPayload(requestId, "bad_request", "unknown operation") };
+
+  if (idempotency.has(requestId)) return { status: 200, payload: idempotency.get(requestId) };
+
   const params = (body.params ?? {}) as Record<string, unknown>;
+  const expectedGeneration = Number(body.expected_generation ?? 0);
   const confirmation = body.confirmation ? String(body.confirmation) : "";
 
-  if (CONFIRMABLE.has(op)) {
-    const resource =
-      op === "workspace.close" ? String(params.workspace_id ?? "")
-      : op === "tab.close" ? String(params.tab_id ?? "")
-      : op === "pane.close" ? String(params.pane_id ?? "")
-      : String(params.worktree_id ?? params.workspace_id ?? "");
-    if (!confirmation || !consumeNonce(confirmation, op, resource)) {
-      return { status: 428, payload: { request_id: requestId, error: { code: "confirmation_required", message: "confirmation required", retryable: false } } };
+  const resource = spec.resourceField ? String(params[spec.resourceField] ?? "") : "";
+
+  // A divergent alternate identifier would let the guard and the dispatch key on
+  // different resources. Checked before the strict decode, as the server does.
+  if (spec.altResourceField) {
+    const alt = params[spec.altResourceField];
+    if (typeof alt === "string" && alt && alt !== resource) {
+      return { status: 400, payload: errPayload(requestId, "bad_request", "conflicting resource identifiers") };
     }
   }
 
-  let result: Record<string, unknown> = { ok: true };
+  // Strict params: Go decodes each operation into its own struct with
+  // DisallowUnknownFields, so an extra key is invalid_params, not ignored.
+  for (const key of Object.keys(params)) {
+    if (!spec.fields.includes(key)) {
+      return { status: 400, payload: errPayload(requestId, "invalid_params", `unexpected field ${key}`) };
+    }
+  }
+
+  if (spec.requiresConfirmation && !confirmation) {
+    return { status: 428, payload: errPayload(requestId, "confirmation_required", "confirmation required") };
+  }
+
+  // Mandatory generation guard. Live generations start at 1, so a missing or
+  // zero value can never match and must be refused outright.
+  if (generationChecked(spec.resourceField)) {
+    if (!Number.isInteger(expectedGeneration) || expectedGeneration <= 0) {
+      return {
+        status: 400,
+        payload: errPayload(requestId, "generation_stale", "expected_generation is required for this operation"),
+      };
+    }
+    const current = herd.generations[resource];
+    if (current === undefined) {
+      return { status: 409, payload: errPayload(requestId, "generation_stale", "resource no longer exists", true) };
+    }
+    if (current !== expectedGeneration) {
+      return { status: 409, payload: errPayload(requestId, "generation_stale", "resource changed; refresh and retry", true) };
+    }
+  }
+
+  if (spec.requiresConfirmation && !consumeNonce(confirmation, op, resource, expectedGeneration, params)) {
+    return { status: 403, payload: errPayload(requestId, "confirmation_invalid", "confirmation invalid or expired") };
+  }
+
+  // Test-only fault injection, applied after every real guard so an injected
+  // failure never masks a contract violation.
+  const injected = failNext.get(op);
+  if (injected) {
+    failNext.delete(op);
+    return {
+      status: injected.status,
+      payload: errPayload(requestId, injected.code, injected.message, injected.retryable),
+    };
+  }
+
+  const outcome = dispatch(op, params, requestId);
+  if ("status" in outcome) return outcome;
+
+  const payload = { request_id: requestId, accepted: true, result: outcome.result };
+  idempotency.set(requestId, payload);
+  broadcast();
+  return { status: 200, payload };
+}
+
+type Dispatched = { result: Record<string, unknown> } | { status: number; payload: unknown };
+
+function notFound(requestId: string, kind: string): Dispatched {
+  return { status: 404, payload: errPayload(requestId, "not_found", `${kind} not found`) };
+}
+
+function dispatch(op: string, params: Record<string, unknown>, requestId: string): Dispatched {
   switch (op) {
     case "workspace.create": {
       const n = herd.workspaces.length + 1;
       const id = `w${herd.idSeq++}`;
       const tabId = `${id}:t1`;
       const paneId = newPaneId(id);
+      const cwd = String(params.cwd || "/Users/dev/code");
       herd.workspaces.push({ workspace_id: id, number: n, label: String(params.label || `space-${n}`), focused: false, pane_count: 1, tab_count: 1, active_tab_id: tabId, agent_status: "idle" });
       herd.tabs.push({ tab_id: tabId, workspace_id: id, number: 1, label: "shell", focused: false, pane_count: 1, agent_status: "idle" });
-      herd.panes.push({ pane_id: paneId, terminal_id: `term_${herd.idSeq}`, workspace_id: id, tab_id: tabId, focused: false, cwd: String(params.cwd || "/Users/dev/code"), foreground_cwd: String(params.cwd || "/Users/dev/code"), title: "zsh", revision: 0 });
-      result = { workspace: { workspace_id: id }, tab: { tab_id: tabId }, root_pane: { pane_id: paneId } };
-      break;
+      herd.panes.push({ pane_id: paneId, terminal_id: `term_${herd.idSeq}`, workspace_id: id, tab_id: tabId, focused: false, cwd, foreground_cwd: cwd, title: "zsh", revision: 0 });
+      return { result: { workspace: { workspace_id: id }, tab: { tab_id: tabId }, root_pane: { pane_id: paneId } } };
     }
     case "tab.create": {
-      const wsId = String(params.workspace_id);
+      const wsId = String(params.workspace_id ?? "");
       const ws = herd.workspaces.find((w) => w.workspace_id === wsId);
       if (!ws) return notFound(requestId, "workspace");
       const order = herd.tabs.filter((t) => t.workspace_id === wsId).length;
       const id = `${wsId}:t${herd.idSeq++}`;
       const paneId = newPaneId(wsId);
       herd.tabs.push({ tab_id: id, workspace_id: wsId, number: order + 1, label: String(params.label || `tab-${order + 1}`), focused: false, pane_count: 1, agent_status: "idle" });
-      herd.panes.push({ pane_id: paneId, terminal_id: `term_${herd.idSeq}`, workspace_id: wsId, tab_id: id, focused: false, cwd: ws.active_tab_id, foreground_cwd: "", title: "zsh", revision: 0 });
+      herd.panes.push({ pane_id: paneId, terminal_id: `term_${herd.idSeq}`, workspace_id: wsId, tab_id: id, focused: false, cwd: "/Users/dev/code", foreground_cwd: "/Users/dev/code", title: "zsh", revision: 0 });
       ws.tab_count += 1;
-      result = { tab: { tab_id: id }, root_pane: { pane_id: paneId } };
-      break;
+      return { result: { tab: { tab_id: id }, root_pane: { pane_id: paneId } } };
     }
     case "pane.split": {
-      const paneId = String(params.pane_id || params.target_pane_id);
+      const paneId = String(params.pane_id);
       const pane = herd.panes.find((p) => p.pane_id === paneId);
       if (!pane) return notFound(requestId, "pane");
       const id = newPaneId(pane.workspace_id);
       herd.panes.push({ pane_id: id, terminal_id: `term_${herd.idSeq}`, workspace_id: pane.workspace_id, tab_id: pane.tab_id, focused: false, cwd: pane.cwd, foreground_cwd: pane.cwd, title: "zsh", revision: 0 });
-      const t = herd.tabs.find((tt) => tt.tab_id === pane.tab_id);
-      if (t) t.pane_count += 1;
-      result = { pane: { pane_id: id } };
-      break;
+      const tab = herd.tabs.find((t) => t.tab_id === pane.tab_id);
+      if (tab) tab.pane_count += 1;
+      return { result: { pane: { pane_id: id } } };
     }
     case "workspace.focus":
       herd.workspaces.forEach((w) => (w.focused = w.workspace_id === params.workspace_id));
       herd.focusedWorkspaceId = String(params.workspace_id);
-      break;
+      return { result: { ok: true } };
     case "tab.focus":
       herd.focusedTabId = String(params.tab_id);
-      break;
+      return { result: { ok: true } };
     case "pane.focus":
       herd.focusedPaneId = String(params.pane_id);
-      break;
+      return { result: { ok: true } };
     case "workspace.rename": {
       const w = herd.workspaces.find((x) => x.workspace_id === params.workspace_id);
       if (w) w.label = String(params.label);
-      break;
+      return { result: { ok: true } };
     }
     case "tab.rename": {
       const t = herd.tabs.find((x) => x.tab_id === params.tab_id);
       if (t) t.label = String(params.label);
-      result = { tab: t };
-      break;
+      return { result: { tab: t ?? null } as Record<string, unknown> };
     }
     case "pane.rename": {
       const p = herd.panes.find((x) => x.pane_id === params.pane_id);
       if (p) p.title = String(params.label);
-      break;
+      return { result: { ok: true } };
     }
     case "tab.move": {
       const t = herd.tabs.find((x) => x.tab_id === params.tab_id);
@@ -312,24 +671,26 @@ function applyMutation(body: Record<string, unknown>): { status: number; payload
       let at = insert > from ? insert - 1 : insert;
       at = Math.max(0, Math.min(without.length, at));
       without.splice(at, 0, t);
-      // Write the reordered workspace tabs back into their original array slots.
       let wi = 0;
       herd.tabs = herd.tabs.map((x) => (x.workspace_id === t.workspace_id ? without[wi++] : x));
-      result = { tabs: without };
-      break;
+      return { result: { tabs: without } };
     }
     case "pane.zoom": {
       const p = herd.panes.find((x) => x.pane_id === params.pane_id);
       const layout = herd.layouts.find((l) => l.tab_id === p?.tab_id);
       if (layout) layout.zoomed = !layout.zoomed;
-      break;
+      return { result: { ok: true } };
     }
     case "pane.resize":
     case "pane.swap":
     case "agent.focus":
-    case "agent.send_keys":
     case "worktree.open":
-      break;
+      return { result: { ok: true } };
+    case "agent.send_keys": {
+      const agent = herd.agents.find((a) => a.pane_id === params.pane_id);
+      if (!agent) return notFound(requestId, "agent");
+      return { result: { ok: true } };
+    }
     case "pane.move": {
       const pane = herd.panes.find((p) => p.pane_id === params.pane_id);
       const dest = (params.destination ?? {}) as { type?: string; tab_id?: string };
@@ -342,79 +703,113 @@ function applyMutation(body: Record<string, unknown>): { status: number; payload
           newTab.pane_count += 1;
         }
       }
-      // new_tab / new_workspace are acknowledged; the mock leaves layout otherwise unchanged.
-      break;
+      return { result: { ok: true } };
     }
     case "workspace.close":
       herd.workspaces = herd.workspaces.filter((w) => w.workspace_id !== params.workspace_id);
       herd.tabs = herd.tabs.filter((t) => t.workspace_id !== params.workspace_id);
+      for (const p of herd.panes.filter((p) => p.workspace_id === params.workspace_id)) delete herd.generations[p.pane_id];
       herd.panes = herd.panes.filter((p) => p.workspace_id !== params.workspace_id);
       herd.agents = herd.agents.filter((a) => a.workspace_id !== params.workspace_id);
-      break;
+      return { result: { ok: true } };
     case "tab.close":
       herd.tabs = herd.tabs.filter((t) => t.tab_id !== params.tab_id);
+      for (const p of herd.panes.filter((p) => p.tab_id === params.tab_id)) delete herd.generations[p.pane_id];
       herd.panes = herd.panes.filter((p) => p.tab_id !== params.tab_id);
       herd.agents = herd.agents.filter((a) => a.tab_id !== params.tab_id);
-      break;
+      return { result: { ok: true } };
     case "pane.close":
       herd.panes = herd.panes.filter((p) => p.pane_id !== params.pane_id);
       herd.agents = herd.agents.filter((a) => a.pane_id !== params.pane_id);
       delete herd.generations[String(params.pane_id)];
-      break;
+      return { result: { ok: true } };
     case "agent.prompt": {
-      const a = herd.agents.find((x) => x.pane_id === params.pane_id || x.name === params.target);
-      if (a) {
-        a.agent_status = "working";
-        a.state_change_seq = now();
-        const p = herd.panes.find((x) => x.pane_id === a.pane_id);
-        if (p) p.agent_status = "working";
-      }
-      break;
+      const agent = herd.agents.find((a) => a.pane_id === params.pane_id);
+      if (!agent) return notFound(requestId, "agent");
+      agent.agent_status = "working";
+      agent.state_change_seq = now();
+      const pane = herd.panes.find((p) => p.pane_id === agent.pane_id);
+      if (pane) pane.agent_status = "working";
+      return { result: { ok: true } };
     }
     case "agent.rename": {
-      const a = herd.agents.find((x) => x.pane_id === params.pane_id || x.name === params.target);
-      if (a) a.name = String(params.name);
-      break;
+      const agent = herd.agents.find((a) => a.pane_id === params.pane_id);
+      if (!agent) return notFound(requestId, "agent");
+      const name = String(params.name ?? "");
+      if (!/^[a-z][a-z0-9_-]{0,31}$/.test(name)) {
+        return { status: 400, payload: errPayload(requestId, "invalid_params", "invalid agent name") };
+      }
+      agent.name = name;
+      const pane = herd.panes.find((p) => p.pane_id === agent.pane_id);
+      if (pane) pane.display_agent = name;
+      return { result: { agent: { name } } };
     }
     case "agent.start": {
       const paneId = String(params.pane_id);
-      const kind = String(params.kind);
+      const kind = String(params.kind ?? "");
       const name = String(params.name ?? "");
       // Mirror internal/herdr/agents.go ValidAgentName + uniqueness.
       if (!/^[a-z][a-z0-9_-]{0,31}$/.test(name)) {
-        return { status: 400, payload: { request_id: requestId, error: { code: "invalid_params", message: "invalid agent name", retryable: false } } };
+        return { status: 400, payload: errPayload(requestId, "invalid_params", "invalid agent name") };
       }
       if (herd.agents.some((a) => a.name === name)) {
-        return { status: 409, payload: { request_id: requestId, error: { code: "conflict", message: "agent name in use", retryable: false } } };
+        return { status: 409, payload: errPayload(requestId, "conflict", "agent name in use") };
       }
-      const p = herd.panes.find((x) => x.pane_id === paneId);
-      if (!p) return notFound(requestId, "pane");
-      p.agent = kind;
-      p.display_agent = name;
-      p.agent_status = "working";
-      herd.agents.push({ terminal_id: p.terminal_id, agent: kind, name, agent_status: "working", workspace_id: p.workspace_id, tab_id: p.tab_id, pane_id: paneId, focused: false, interactive_ready: true, state_change_seq: now(), cwd: p.cwd, foreground_cwd: p.cwd, terminal_title_stripped: `${name} starting`, revision: 0 });
-      result = { agent: { name, agent: kind } };
-      break;
+      const pane = herd.panes.find((p) => p.pane_id === paneId);
+      if (!pane) return notFound(requestId, "pane");
+      pane.agent = kind;
+      pane.display_agent = name;
+      pane.agent_status = "working";
+      herd.agents.push({
+        terminal_id: pane.terminal_id, agent: kind, name, agent_status: "working",
+        workspace_id: pane.workspace_id, tab_id: pane.tab_id, pane_id: paneId, focused: false,
+        interactive_ready: true, state_change_seq: now(), cwd: pane.cwd, foreground_cwd: pane.cwd,
+        terminal_title_stripped: `${name} starting`, revision: 0,
+      });
+      return { result: { agent: { name, agent: kind } } };
     }
-    case "worktree.create":
-      herd.worktrees.push({ path: String(params.path || `${params.cwd}/wt`), label: String(params.label || "feature"), branch: String(params.branch || "feature"), is_bare: false, is_detached: false, is_linked_worktree: true, is_prunable: false });
-      break;
+    case "worktree.create": {
+      // Herdr creates the worktree AND opens it as a workspace with its first
+      // tab and root pane, so the result carries all four.
+      const branch = String(params.branch || "feature");
+      const path = String(params.path || `${String(params.cwd || "/Users/dev/code")}/${branch}`);
+      const id = `w${herd.idSeq++}`;
+      const tabId = `${id}:t1`;
+      const paneId = newPaneId(id);
+      const repoRoot = String(params.cwd || "/Users/dev/code");
+      herd.workspaces.push({
+        workspace_id: id, number: herd.workspaces.length + 1, label: String(params.label || branch),
+        focused: false, pane_count: 1, tab_count: 1, active_tab_id: tabId, agent_status: "idle",
+        // A created worktree is a linked checkout, so it is removable.
+        worktree: worktreeInfo(repoRoot.split("/").filter(Boolean).pop() || branch, repoRoot, path, true),
+      });
+      herd.tabs.push({ tab_id: tabId, workspace_id: id, number: 1, label: "shell", focused: false, pane_count: 1, agent_status: "idle" });
+      herd.panes.push({ pane_id: paneId, terminal_id: `term_${herd.idSeq}`, workspace_id: id, tab_id: tabId, focused: false, cwd: path, foreground_cwd: path, title: "zsh", revision: 0 });
+      return {
+        result: {
+          worktree: { path, branch },
+          workspace: { workspace_id: id },
+          tab: { tab_id: tabId },
+          root_pane: { pane_id: paneId },
+        },
+      };
+    }
     case "worktree.remove":
-    case "worktree.remove_force":
-      herd.worktrees = herd.worktrees.filter((w) => w.open_workspace_id !== params.worktree_id && w.open_workspace_id !== params.workspace_id);
-      break;
+    case "worktree.remove_force": {
+      // Herdr removes the checkout AND closes the workspace it was open in, so
+      // the provenance disappears with the workspace, not on its own.
+      const workspaceId = String(params.worktree_id ?? "");
+      herd.workspaces = herd.workspaces.filter((w) => w.workspace_id !== workspaceId);
+      herd.tabs = herd.tabs.filter((t) => t.workspace_id !== workspaceId);
+      const gone = herd.panes.filter((p) => p.workspace_id === workspaceId).map((p) => p.pane_id);
+      herd.panes = herd.panes.filter((p) => p.workspace_id !== workspaceId);
+      herd.agents = herd.agents.filter((a) => a.workspace_id !== workspaceId);
+      for (const id of gone) delete herd.generations[id];
+      return { result: { ok: true, workspace_id: workspaceId } };
+    }
     default:
-      return { status: 400, payload: { request_id: requestId, error: { code: "bad_request", message: `unknown operation ${op}`, retryable: false } } };
+      return { status: 400, payload: errPayload(requestId, "bad_request", `unknown operation ${op}`) };
   }
-
-  const payload = { request_id: requestId, accepted: true, result };
-  if (requestId) idempotency.set(requestId, payload);
-  broadcast();
-  return { status: 200, payload };
-}
-
-function notFound(requestId: string, kind: string) {
-  return { status: 404, payload: { request_id: requestId, error: { code: "not_found", message: `${kind} not found`, retryable: false } } };
 }
 
 /* --------------------------------------------------------------- http utils */
@@ -443,6 +838,168 @@ function unauthorized(res: ServerResponse): boolean {
   return true;
 }
 
+function handleConfirmations(res: ServerResponse, body: Record<string, unknown>): void {
+  const operation = String(body.operation ?? "");
+  const spec = CONFIRMABLE[operation];
+  if (!spec) {
+    send(res, 400, { error: { code: "bad_request", message: "operation does not require confirmation" } });
+    return;
+  }
+  const resourceId = String(body.resource_id ?? "");
+  const params = (body.params ?? {}) as Record<string, unknown>;
+  const expectedGeneration = Number(body.expected_generation ?? 0);
+
+  if (spec.resourceField && !resourceId) {
+    send(res, 400, { error: { code: "bad_request", message: "missing resource id" } });
+    return;
+  }
+  const inParams = spec.resourceField ? params[spec.resourceField] : undefined;
+  if (typeof inParams === "string" && inParams && inParams !== resourceId) {
+    send(res, 400, { error: { code: "bad_request", message: "resource id mismatch" } });
+    return;
+  }
+  if (spec.altResourceField) {
+    const alt = params[spec.altResourceField];
+    if (typeof alt === "string" && alt && alt !== resourceId) {
+      send(res, 400, { error: { code: "bad_request", message: "conflicting resource identifiers" } });
+      return;
+    }
+  }
+  if (generationChecked(spec.resourceField)) {
+    const current = herd.generations[resourceId];
+    if (current === undefined) {
+      send(res, 404, { error: { code: "not_found", message: "resource not found" } });
+      return;
+    }
+    if (current !== expectedGeneration) {
+      send(res, 409, { error: { code: "generation_stale", message: "resource changed; refresh and retry" } });
+      return;
+    }
+  }
+  send(res, 200, issueNonce(operation, resourceId, expectedGeneration, params));
+}
+
+/** The bytes a pane last rendered. The same text feeds both read surfaces. */
+function paneOutput(paneId: string): string {
+  const agent = herd.agents.find((a) => a.pane_id === paneId);
+  if (!agent) return `$ cd ${paneId}\n$ `;
+  return `$ ${agent.agent} --resume\n${agent.terminal_title_stripped || "working"}\n· reading src/server/reconnect.ts\n· editing src/server/reconnect.ts\n${"·".repeat(runOutputPadding)}\n$ `;
+}
+
+/** Test-only: pad observed output so the byte bound (and truncation) applies. */
+let runOutputPadding = 0;
+
+/** Test-only: make the next observed-output read fail once with a given code. */
+let failNextRunRead: { status: number; code: string; message: string } | null = null;
+
+/** Byte-bound the tail, cut on a UTF-8 boundary, exactly as the relay does. */
+function boundObservedText(text: string, maxBytes: number): { text: string; truncated: boolean } {
+  const buf = Buffer.from(text, "utf8");
+  if (maxBytes <= 0 || buf.length <= maxBytes) return { text, truncated: false };
+  let tail = buf.subarray(buf.length - maxBytes);
+  // Advance past a partial leading rune so the result is always valid UTF-8.
+  let at = 0;
+  while (at < tail.length && (tail[at] & 0xc0) === 0x80) at++;
+  tail = tail.subarray(at);
+  return { text: tail.toString("utf8"), truncated: true };
+}
+
+/** internal/server/runs.go countLines: empty text is zero lines; a trailing
+ * newline terminates the last line rather than starting a new one. */
+function countLines(text: string): number {
+  if (text === "") return 0;
+  let n = 0;
+  for (const ch of text) if (ch === "\n") n++;
+  return text.endsWith("\n") ? n : n + 1;
+}
+
+function runError(res: ServerResponse, status: number, code: string, message: string) {
+  // internal/server/errors.go writeError: static message, no retryable flag.
+  send(res, status, { error: { code, message } }, { "Cache-Control": "no-store" });
+}
+
+/**
+ * `GET /runs/{pane_id}` — the same guard order as internal/server/runs.go:
+ * mandatory nonzero generation, then source/lines validation, then the
+ * generation check *before* any read, then the run lookup, then the read.
+ */
+function handleRunDetail(res: ServerResponse, paneId: string, url: URL): void {
+  if (!paneId) {
+    runError(res, 400, "bad_request", "missing pane id");
+    return;
+  }
+  const raw = url.searchParams.get("expected_generation");
+  const expected = raw === null ? NaN : Number(raw);
+  if (raw === null || raw === "" || !Number.isInteger(expected) || expected <= 0) {
+    runError(res, 400, "generation_stale", "expected_generation is required to read a run");
+    return;
+  }
+  const source = url.searchParams.get("source") || "recent-unwrapped";
+  if (!RUN_OUTPUT_SOURCES.includes(source)) {
+    runError(res, 400, "bad_request", "invalid source");
+    return;
+  }
+  let lines = DEFAULT_RUN_OUTPUT_LINES;
+  const rawLines = url.searchParams.get("lines");
+  if (rawLines) {
+    const n = Number(rawLines);
+    if (!Number.isInteger(n) || n <= 0) {
+      runError(res, 400, "bad_request", "invalid lines");
+      return;
+    }
+    lines = n;
+  }
+  if (lines > runContract.maxOutputLines) lines = runContract.maxOutputLines;
+
+  const current = herd.generations[paneId];
+  if (current === undefined) {
+    runError(res, 409, "generation_stale", "pane no longer exists");
+    return;
+  }
+  if (current !== expected) {
+    runError(res, 409, "generation_stale", "pane changed; refresh and retry");
+    return;
+  }
+
+  const run = projectRuns().find((r) => r.pane_id === paneId);
+  if (!run) {
+    runError(res, 404, "run_unavailable", "no agent run occupies this pane");
+    return;
+  }
+
+  if (failNextRunRead) {
+    const injected = failNextRunRead;
+    failNextRunRead = null;
+    runError(res, injected.status, injected.code, injected.message);
+    return;
+  }
+
+  const bounded = boundObservedText(paneOutput(paneId), runContract.maxOutputBytes);
+  send(
+    res,
+    200,
+    {
+      contract_version: RUN_CONTRACT_VERSION,
+      capabilities: runCapabilities(),
+      run,
+      parts: [
+        {
+          type: PART_OBSERVED_TERMINAL_OUTPUT,
+          source,
+          format: "text",
+          // internal/server/runs.go countLines: how many lines came back, NOT the
+          // clamped request. The UI states this as fact, so it must be true.
+          lines: countLines(bounded.text),
+          bytes: Buffer.byteLength(bounded.text, "utf8"),
+          truncated: bounded.truncated,
+          text: bounded.text,
+        },
+      ],
+    },
+    { "Cache-Control": "no-store" },
+  );
+}
+
 async function handleApi(req: IncomingMessage, res: ServerResponse, url: URL): Promise<boolean> {
   const path = url.pathname.replace("/api/v1", "");
   const method = req.method ?? "GET";
@@ -457,7 +1014,35 @@ async function handleApi(req: IncomingMessage, res: ServerResponse, url: URL): P
     nonces.clear();
     idempotency.clear();
     terminalOwners.clear();
+    failNext.clear();
     outage = false;
+    runContract.supported = true;
+    runContract.maxRuns = 200;
+    runOutputPadding = 0;
+    failNextRunRead = null;
+    send(res, 200, { ok: true });
+    return true;
+  }
+  if (path === "/__run_contract" && method === "POST") {
+    // Test-only: model an OLDER relay (`supported: false` removes the `runs`
+    // capability document and both run routes), lower the list bound to
+    // exercise truncation, or pad observed output past the byte bound.
+    const body = await readBody(req);
+    if (body.supported !== undefined) runContract.supported = !!body.supported;
+    if (body.max_runs !== undefined) runContract.maxRuns = Number(body.max_runs);
+    if (body.output_padding !== undefined) runOutputPadding = Number(body.output_padding);
+    broadcast();
+    send(res, 200, { supported: runContract.supported, max_runs: runContract.maxRuns });
+    return true;
+  }
+  if (path === "/__fail_next_run_read" && method === "POST") {
+    // Test-only: the next observed-output read fails once with a stable code.
+    const body = await readBody(req);
+    failNextRunRead = {
+      status: Number(body.status ?? 502),
+      code: String(body.code ?? "run_read_failed"),
+      message: String(body.message ?? "run output unavailable"),
+    };
     send(res, 200, { ok: true });
     return true;
   }
@@ -476,6 +1061,41 @@ async function handleApi(req: IncomingMessage, res: ServerResponse, url: URL): P
     send(res, 200, { outage });
     return true;
   }
+  if (path === "/__fail_next" && method === "POST") {
+    // Test-only: make the next call to `operation` fail once. `retryable: true`
+    // is how the relay reports an uncertain outcome, which the UI must surface
+    // as delivery-unknown rather than retrying.
+    const body = await readBody(req);
+    failNext.set(String(body.operation), {
+      status: Number(body.status ?? 502),
+      code: String(body.code ?? "internal"),
+      message: String(body.message ?? "operation failed"),
+      retryable: !!body.retryable,
+    });
+    send(res, 200, { ok: true });
+    return true;
+  }
+  if (path === "/__replace_pane" && method === "POST") {
+    // Test-only: recycle a pane the way Herdr does — same id, new generation.
+    const body = await readBody(req);
+    const paneId = String(body.pane_id ?? "");
+    if (herd.generations[paneId] === undefined) {
+      send(res, 404, { error: { code: "not_found", message: "pane not found" } });
+      return true;
+    }
+    herd.generations[paneId] += 1;
+    herd.agents = herd.agents.filter((a) => a.pane_id !== paneId);
+    const pane = herd.panes.find((p) => p.pane_id === paneId);
+    if (pane) {
+      pane.agent = undefined;
+      pane.display_agent = undefined;
+      pane.agent_status = undefined;
+      pane.title = "zsh";
+    }
+    broadcast();
+    send(res, 200, { pane_id: paneId, generation: herd.generations[paneId] });
+    return true;
+  }
   if (path === "/pair" && method === "POST") {
     const body = await readBody(req);
     if (String(body.secret) !== PAIR_SECRET) {
@@ -491,8 +1111,6 @@ async function handleApi(req: IncomingMessage, res: ServerResponse, url: URL): P
   }
   if (path === "/session" && method === "GET") {
     if (!isPaired(req)) return unauthorized(res);
-    // Same shape as /pair: carries csrf_token + expiry so a cold reload recovers
-    // a mutable session. The bearer cookie is never echoed in the body.
     send(res, 200, {
       csrf_token: "mock-csrf-token",
       expires_unix_ms: Date.now() + 12 * 3600 * 1000,
@@ -528,7 +1146,49 @@ async function handleApi(req: IncomingMessage, res: ServerResponse, url: URL): P
   if (path.startsWith("/panes/") && path.endsWith("/read") && method === "GET") {
     if (!isPaired(req)) return unauthorized(res);
     const paneId = decodeURIComponent(path.slice("/panes/".length, -"/read".length));
-    send(res, 200, { pane_id: paneId, source: url.searchParams.get("source") ?? "visible", lines: Number(url.searchParams.get("lines") ?? 100), content: `Last output for ${paneId}\n$ ` });
+    if (herd.generations[paneId] === undefined) {
+      send(res, 404, { error: { code: "not_found", message: "pane not found", retryable: false } });
+      return true;
+    }
+    const lines = Number(url.searchParams.get("lines") ?? 100);
+    send(res, 200, {
+      pane_id: paneId,
+      source: url.searchParams.get("source") ?? "visible",
+      lines,
+      content: paneOutput(paneId),
+    });
+    return true;
+  }
+  if (path === "/runs" && method === "GET") {
+    if (!isPaired(req)) return unauthorized(res);
+    if (!runContract.supported) {
+      // An older relay has no run routes at all.
+      send(res, 404, { error: { code: "not_found", message: "unknown endpoint" } });
+      return true;
+    }
+    const all = projectRuns();
+    const truncated = all.length > runContract.maxRuns;
+    send(
+      res,
+      200,
+      {
+        contract_version: RUN_CONTRACT_VERSION,
+        capabilities: runCapabilities(),
+        snapshot_hash: `h${herd.seq}`,
+        runs: truncated ? all.slice(0, runContract.maxRuns) : all,
+        truncated,
+      },
+      { "Cache-Control": "no-store" },
+    );
+    return true;
+  }
+  if (path.startsWith("/runs/") && method === "GET") {
+    if (!isPaired(req)) return unauthorized(res);
+    if (!runContract.supported) {
+      send(res, 404, { error: { code: "not_found", message: "unknown endpoint" } });
+      return true;
+    }
+    handleRunDetail(res, decodeURIComponent(path.slice("/runs/".length)), url);
     return true;
   }
   if (path === "/directories" && method === "GET") {
@@ -539,14 +1199,12 @@ async function handleApi(req: IncomingMessage, res: ServerResponse, url: URL): P
   }
   if (path === "/confirmations" && method === "POST") {
     if (!isPaired(req)) return unauthorized(res);
-    const body = await readBody(req);
-    send(res, 200, issueNonce(String(body.operation), String(body.resource_id ?? "")));
+    handleConfirmations(res, await readBody(req));
     return true;
   }
   if (path === "/mutations" && method === "POST") {
     if (!isPaired(req)) return unauthorized(res);
-    const body = await readBody(req);
-    const { status, payload } = applyMutation(body);
+    const { status, payload } = applyMutation(await readBody(req));
     send(res, status, payload);
     return true;
   }
@@ -563,7 +1221,7 @@ eventsWss.on("connection", (ws) => {
   ws.send(JSON.stringify({ type: "snapshot", snapshot: envelope() }));
   ws.on("close", () => eventClients.delete(ws));
   ws.on("message", () => {
-    /* browser only sends control frames; nothing to act on */
+    /* the browser only sends control frames; nothing to act on */
   });
 });
 
@@ -571,9 +1229,13 @@ terminalWss.on("connection", (ws, req) => {
   const url = new URL(req.url ?? "", "http://localhost");
   const paneId = decodeURIComponent(url.pathname.split("/terminals/")[1] ?? "");
   const confirmation = url.searchParams.get("confirmation") ?? "";
-  // Takeover is honored only with a valid terminal.takeover confirmation nonce
-  // (mirrors internal/server/terminalroute.go).
-  const takeover = url.searchParams.get("takeover") === "1" && consumeNonce(confirmation, "terminal.takeover", paneId);
+  const expectedGeneration = Number(url.searchParams.get("expected_generation") ?? 0);
+
+  // Takeover is honored only with a valid, generation-bound terminal.takeover
+  // nonce (mirrors internal/server/terminalroute.go).
+  const takeover =
+    url.searchParams.get("takeover") === "1" &&
+    consumeNonce(confirmation, "terminal.takeover", paneId, expectedGeneration, {});
 
   const existing = terminalOwners.get(paneId);
   const conflict = existing && existing.readyState === existing.OPEN && !takeover;
@@ -591,7 +1253,7 @@ terminalWss.on("connection", (ws, req) => {
     if (isBinary) {
       // Echo input as a frame. Strip bracketed-paste markers a real app would
       // consume, and render a lone CR as CRLF so multi-line pastes show on
-      // separate rows in the mirror (a fake-shell convenience for tests).
+      // separate rows in the mirror.
       let s = Buffer.from(data as Buffer).toString("utf8");
       // eslint-disable-next-line no-control-regex
       s = s.replace(/\x1b\[20[01]~/g, "").replace(/\r(?!\n)/g, "\r\n");
@@ -626,11 +1288,24 @@ function handleUpgrade(req: IncomingMessage, socket: Duplex, head: Buffer) {
       return;
     }
     eventsWss.handleUpgrade(req, socket, head, (ws) => eventsWss.emit("connection", ws, req));
-  } else if (url.pathname.startsWith("/api/v1/terminals/")) {
-    terminalWss.handleUpgrade(req, socket, head, (ws) => terminalWss.emit("connection", ws, req));
-  } else {
-    socket.destroy();
+    return;
   }
+  if (url.pathname.startsWith("/api/v1/terminals/")) {
+    const paneId = decodeURIComponent(url.pathname.split("/terminals/")[1] ?? "");
+    const expectedGeneration = Number(url.searchParams.get("expected_generation") ?? 0);
+    // Attach is generation-checked and the assertion is mandatory: the server
+    // answers 400/409 *before* the upgrade, which the browser observes as a
+    // failed connection.
+    const current = herd.generations[paneId];
+    if (!Number.isInteger(expectedGeneration) || expectedGeneration <= 0 || current === undefined || current !== expectedGeneration) {
+      socket.write("HTTP/1.1 409 Conflict\r\nConnection: close\r\n\r\n");
+      socket.destroy();
+      return;
+    }
+    terminalWss.handleUpgrade(req, socket, head, (ws) => terminalWss.emit("connection", ws, req));
+    return;
+  }
+  socket.destroy();
 }
 
 function attach(middlewares: ViteDevServer["middlewares"], httpServer: ViteDevServer["httpServer"] | PreviewServer["httpServer"]) {

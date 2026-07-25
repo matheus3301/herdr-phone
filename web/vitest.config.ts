@@ -14,6 +14,12 @@ export default defineConfig({
     environment: "jsdom",
     setupFiles: ["./vitest.setup.ts"],
     css: false,
+    // The 5s default is enough now that the delivery-state tests commit their
+    // value in one change event instead of typing per keystroke through jsdom,
+    // which was the actual cause of their nondeterminism. A modest headroom over
+    // the default covers Radix portal mounts on a loaded machine; it is not a
+    // substitute for awaiting the thing under test.
+    testTimeout: 10_000,
     include: ["src/**/*.{test,spec}.{ts,tsx}"],
     exclude: ["e2e/**", "node_modules/**"],
     coverage: {

@@ -1,8 +1,27 @@
-import { test, type Page } from "@playwright/test";
-import { pair, goToSection } from "./helpers";
+import { test, expect, type Page } from "@playwright/test";
+import { goTo, openRun, openWorkspace, pair, presetTheme } from "./helpers";
 
-// Screenshot review sizes (SPEC §18): 390x844, 430x932, 768x1024, 1440x900.
-// Runs once (desktop/chromium project) and writes PNGs to e2e/__screenshots__.
+/**
+ * Screenshot review. Captures the production bundle against the mock herd at the
+ * widths the design targets, in both themes.
+ *
+ * The capture path is deliberate. `e2e/__screenshots__/` is **tracked review
+ * documentation**, and a required gate that rewrites tracked files leaves a clean
+ * checkout dirty every time it runs — which is both confusing and a way for a
+ * visual change to land unreviewed. So the ordinary run captures into the
+ * gitignored Playwright artifacts directory, keeping every assertion in the gate
+ * (a capture that cannot navigate or renders the wrong theme still fails), and
+ * refreshing the tracked images is an explicit, separate act:
+ *
+ *     make screenshots        # or HERDR_PHONE_UPDATE_SCREENSHOTS=1
+ *
+ * The resulting diff is then reviewed like any other change.
+ */
+const UPDATE_TRACKED = process.env.HERDR_PHONE_UPDATE_SCREENSHOTS === "1";
+const OUT_DIR = UPDATE_TRACKED ? "e2e/__screenshots__" : "test-results/screenshots";
+
+const shot = (name: string) => `${OUT_DIR}/${name}.png`;
+
 const SIZES = [
   { name: "iphone-390x844", width: 390, height: 844 },
   { name: "iphone-430x932", width: 430, height: 932 },
@@ -10,45 +29,75 @@ const SIZES = [
   { name: "desktop-1440x900", width: 1440, height: 900 },
 ];
 
-// Light captures at the two key widths the QA pass targets (390 + desktop).
 const LIGHT_SIZES = [
   { name: "light-390x844", width: 390, height: 844 },
+  { name: "light-768x1024", width: 768, height: 1024 },
   { name: "light-1440x900", width: 1440, height: 900 },
 ];
 
-async function captureCore(page: Page, suffix: string) {
-  await page.screenshot({ path: `e2e/__screenshots__/terminal-${suffix}.png`, fullPage: false });
-  await goToSection(page, "Herd");
-  await page.getByRole("heading", { name: /needs you/i }).first().waitFor();
-  await page.screenshot({ path: `e2e/__screenshots__/herd-${suffix}.png`, fullPage: false });
-  await goToSection(page, "Spaces");
-  await page.getByRole("button", { name: /new workspace/i }).waitFor();
-  await page.screenshot({ path: `e2e/__screenshots__/spaces-${suffix}.png`, fullPage: false });
+async function captureAll(page: Page, suffix: string, theme: "light" | "dark") {
+  // Guard the capture itself: a screenshot review is worthless if the theme it
+  // claims to show is not the one that rendered.
+  await expect
+    .poll(() => page.evaluate(() => document.documentElement.classList.contains("light")))
+    .toBe(theme === "light");
+  await page.screenshot({ path: shot(`agents-${suffix}`) });
+
+  await openRun(page, "claude");
+  await expect(page.getByRole("heading", { name: /observed activity/i })).toBeVisible();
+  // Give the bounded pane read time to land so the fallback is visible.
+  await expect(page.getByText(/recent terminal output/i)).toBeVisible();
+  await page.screenshot({ path: shot(`run-${suffix}`) });
+
+  await goTo(page, "Start run");
+  await expect(page.getByRole("heading", { level: 1, name: "Start run" })).toBeVisible();
+  await page.screenshot({ path: shot(`start-run-${suffix}`) });
+
+  await goTo(page, "Workspaces");
+  await expect(page.getByRole("heading", { level: 1, name: "Workspaces" })).toBeVisible();
+  await page.screenshot({ path: shot(`workspaces-${suffix}`) });
+
+  await openWorkspace(page, "space-api");
+  await page.screenshot({ path: shot(`workspace-detail-${suffix}`) });
 }
 
 test.describe("screenshot review", () => {
   test.skip(({ browserName }) => browserName !== "chromium", "capture once");
 
-  test("capture core screens at review sizes (dark)", async ({ page }, testInfo) => {
+  test("capture the product at review sizes (dark)", async ({ page }, testInfo) => {
     test.skip(testInfo.project.name !== "desktop", "capture once, from the desktop project");
-    test.setTimeout(120_000);
+    test.setTimeout(180_000);
+    // Explicit: the app's default theme follows the OS, and a headless Chromium
+    // reports a light preference.
+    await presetTheme(page, "dark");
     for (const size of SIZES) {
       await page.setViewportSize({ width: size.width, height: size.height });
       await pair(page);
-      await captureCore(page, size.name);
+      await captureAll(page, size.name, "dark");
     }
   });
 
-  test("capture core screens in light mode (390 + desktop)", async ({ page }, testInfo) => {
+  test("capture the product at review sizes (light)", async ({ page }, testInfo) => {
     test.skip(testInfo.project.name !== "desktop", "capture once, from the desktop project");
-    test.setTimeout(120_000);
-    await page.addInitScript(() => {
-      localStorage.setItem("herdr-phone.prefs", JSON.stringify({ theme: "light", terminalFontSize: 13 }));
-    });
+    test.setTimeout(180_000);
+    await presetTheme(page, "light");
     for (const size of LIGHT_SIZES) {
       await page.setViewportSize({ width: size.width, height: size.height });
       await pair(page);
-      await captureCore(page, size.name);
+      await captureAll(page, size.name, "light");
+    }
+  });
+
+  test("capture the console", async ({ page }, testInfo) => {
+    test.skip(testInfo.project.name !== "desktop", "capture once, from the desktop project");
+    test.setTimeout(120_000);
+    await presetTheme(page, "dark");
+    for (const size of [SIZES[0], SIZES[3]]) {
+      await page.setViewportSize({ width: size.width, height: size.height });
+      await pair(page);
+      await page.goto("/console/w1%3Ap1?generation=3");
+      await expect(page.getByTestId("terminal-host")).toContainText("herdr", { timeout: 20_000 });
+      await page.screenshot({ path: shot(`console-${size.name}`) });
     }
   });
 });

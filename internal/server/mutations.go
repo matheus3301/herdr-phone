@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"net/http"
 	"sort"
+	"strconv"
 	"time"
 )
 
@@ -223,19 +224,29 @@ func (s *Server) handleMutations(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Idempotency fast path: a completed request replays its stored response
-	// without re-validating (its confirmation nonce is already spent) (section 12).
-	key := idemKey(ident.SessionID, req.RequestID)
-	if e, ok := s.idem.get(key); ok {
-		s.replay(w, e)
-		return
-	}
-
 	norm, err := normalizeParams(req.Params)
 	if err != nil {
 		writeError(w, http.StatusBadRequest, codeBadRequest, "invalid params")
 		return
 	}
+
+	// Idempotency fast path: a completed request replays its stored response
+	// without re-validating (its confirmation nonce is already spent) (section 12).
+	// The replay is bound to a fingerprint of the operation, the asserted
+	// generation, and the normalized params, so a client-chosen request id reused
+	// with different content is rejected instead of retrieving a foreign response.
+	key := idemKey(ident.SessionID, req.RequestID)
+	fingerprint := requestFingerprint(req.Operation, req.ExpectedGeneration, norm)
+	switch e, res := s.idem.peek(key, fingerprint); res {
+	case idemDone:
+		s.replay(w, e)
+		return
+	case idemMismatch:
+		s.writeMutationErr(w, req.RequestID, http.StatusConflict, codeConflict,
+			"request id already used for a different request", false)
+		return
+	}
+
 	resource := ""
 	if spec.resourceField != "" {
 		resource = paramString(req.Params, spec.resourceField)
@@ -300,13 +311,17 @@ func (s *Server) handleMutations(w http.ResponseWriter, r *http.Request) {
 	// Reserve the idempotency key immediately before dispatch so two concurrent
 	// retries of the same request execute exactly once (H2). Validation above ran
 	// without a reservation, so its early returns need no cleanup.
-	entry, res := s.idem.reserve(key, s.reservationTTL())
+	entry, res := s.idem.reserve(key, fingerprint, s.reservationTTL())
 	switch res {
 	case idemDone:
 		s.replay(w, entry)
 		return
 	case idemInFlight:
 		s.writeMutationErr(w, req.RequestID, http.StatusConflict, codeConflict, "request already in progress", true)
+		return
+	case idemMismatch:
+		s.writeMutationErr(w, req.RequestID, http.StatusConflict, codeConflict,
+			"request id already used for a different request", false)
 		return
 	}
 	// res == idemReserved: we own execution and must complete or release the key.
@@ -345,8 +360,8 @@ func (s *Server) handleMutations(w http.ResponseWriter, r *http.Request) {
 
 	result, err := s.deps.Mutator.Mutate(ctx, req.Operation, req.Params)
 	if err != nil {
-		code, status, retryable := classifyMutateErr(ctx)
-		message := "operation failed"
+		code, status, retryable := classifyMutateErr(ctx, err)
+		message := mutationMessage(code)
 		if retryable && spec.requiresConfirmation {
 			// The single-use nonce has already been spent on this uncertain
 			// attempt, so a plain retry with the same request_id would fail on the
@@ -355,7 +370,7 @@ func (s *Server) handleMutations(w http.ResponseWriter, r *http.Request) {
 			code = codeConfirmationNeeded
 			status = http.StatusPreconditionRequired
 			retryable = false
-			message = "operation outcome uncertain; obtain a fresh confirmation to retry"
+			message = mutationMessage(codeConfirmationNeeded)
 		}
 		s.deps.Audit.Record(AuditEntry{
 			Event:     "mutation",
@@ -381,7 +396,7 @@ func (s *Server) handleMutations(w http.ResponseWriter, r *http.Request) {
 				// to re-attempt once Herdr recovers (H3). Drop the reservation.
 				s.idem.release(key)
 			} else {
-				s.idem.complete(key, status, body, s.cfg.IdempotencyTTL)
+				s.idem.complete(key, fingerprint, status, body, s.cfg.IdempotencyTTL)
 			}
 		}
 		reserved = false
@@ -403,7 +418,7 @@ func (s *Server) handleMutations(w http.ResponseWriter, r *http.Request) {
 		Accepted:  true,
 		Result:    result,
 	})
-	s.idem.complete(key, http.StatusOK, body, s.cfg.IdempotencyTTL)
+	s.idem.complete(key, fingerprint, http.StatusOK, body, s.cfg.IdempotencyTTL)
 	reserved = false
 	writeRaw(w, http.StatusOK, body)
 }
@@ -444,16 +459,52 @@ func writeRaw(w http.ResponseWriter, status int, body []byte) {
 }
 
 // classifyMutateErr maps a failed mutation to a code/status/retryable triple.
-// The failure cause is derived from the context (deadline/cancel); any other
-// mutator error is treated as an upstream Herdr fault.
-func classifyMutateErr(ctx context.Context) (code string, status int, retryable bool) {
+//
+// The context cause wins first: a deadline or cancellation describes how this
+// relay gave up and is authoritative regardless of what the upstream said. After
+// that, a structured upstream code is preserved as a distinct client outcome —
+// flattening "the pane is gone", "this build cannot do that", and "the socket
+// died" into one code would make each of them undebuggable and would tell the
+// client to retry things that can never succeed. Only the code crosses the
+// boundary; the upstream message never does (it can quote pane content), and the
+// returned message comes from the static table in errors.go.
+func classifyMutateErr(ctx context.Context, err error) (code string, status int, retryable bool) {
 	if ctx.Err() == context.DeadlineExceeded {
 		return codeDeadlineExceeded, http.StatusGatewayTimeout, true
 	}
 	if ctx.Err() == context.Canceled {
 		return codeUnavailable, http.StatusServiceUnavailable, true
 	}
-	return codeInternal, http.StatusBadGateway, false
+	switch upstreamCode(err) {
+	case upstreamNotFound:
+		return codeNotFound, http.StatusNotFound, false
+	case upstreamInvalidParams, upstreamInvalidRequest:
+		return codeBadRequest, http.StatusBadRequest, false
+	case upstreamFeatureDisabled, upstreamPlatformUnsupported, upstreamPluginDisabled, upstreamIncompatible:
+		return codeUnsupported, http.StatusNotImplemented, false
+	case upstreamStreamConflict:
+		return codeConflict, http.StatusConflict, false
+	case upstreamTimeout:
+		return codeDeadlineExceeded, http.StatusGatewayTimeout, true
+	case upstreamConnect, upstreamTransport, upstreamCanceled:
+		return codeUnavailable, http.StatusServiceUnavailable, true
+	default:
+		// Unclassified (or code-free) upstream fault: treat as a Herdr fault the
+		// client cannot fix by retrying the same request.
+		return codeInternal, http.StatusBadGateway, false
+	}
+}
+
+// requestFingerprint binds an idempotency entry to the request that created it.
+// It covers the operation, the asserted pane generation, and the normalized
+// params, so a reused request id can neither replay another payload's response
+// nor have its own response attributed to a different payload. The generation is
+// included because a replay skips the generation guard: without it, a cached
+// success could be handed back for a generation that was never validated.
+func requestFingerprint(operation string, expectedGeneration uint64, normalizedParams []byte) string {
+	return hashParams([]byte(operation + "\x00" +
+		strconv.FormatUint(expectedGeneration, 10) + "\x00" +
+		string(normalizedParams)))
 }
 
 // normalizeParams canonicalizes params so a confirmation and its mutation hash

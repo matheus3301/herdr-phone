@@ -108,8 +108,8 @@ Releases are cut by pushing a `vX.Y.Z` tag that must be an **annotated or signed
 tag object** (the release workflow rejects lightweight tags):
 
 ```sh
-git tag -a v0.1.0 -m "herdr-phone v0.1.0"   # or: git tag -s v0.1.0 -m ...
-git push origin v0.1.0
+git tag -a vX.Y.Z -m "herdr-phone vX.Y.Z"   # or: git tag -s vX.Y.Z -m ...
+git push origin vX.Y.Z
 ```
 
 The tag version must equal the version in `herdr-plugin.toml` and the binary's

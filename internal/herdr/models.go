@@ -19,6 +19,12 @@ func (s AgentStatus) Active() bool {
 
 // Snapshot is the decoded session.snapshot payload: the complete topology and
 // agent bootstrap state. Unknown fields are tolerated and ignored.
+//
+// There is deliberately no top-level worktree array: `SessionSnapshot` in
+// `herdr api schema --json` (protocol 17, schema 1) declares none, so a field
+// for one would decode as empty forever and invite consumers to build on it.
+// Worktree context comes from Workspace.Worktree; the full worktree inventory
+// requires a separate `worktree.list` call.
 type Snapshot struct {
 	Version            string      `json:"version"`
 	Protocol           int         `json:"protocol"`
@@ -30,19 +36,32 @@ type Snapshot struct {
 	Panes              []Pane      `json:"panes"`
 	Layouts            []Layout    `json:"layouts"`
 	Agents             []Agent     `json:"agents"`
-	Worktrees          []Worktree  `json:"worktrees"`
+}
+
+// WorkspaceWorktree is the git checkout provenance Herdr reports for a
+// workspace. It is the authoritative source of a workspace's repository and
+// checkout context: `session.snapshot` carries no top-level worktree array, so
+// this is the only worktree context available without a separate
+// `worktree.list` call.
+type WorkspaceWorktree struct {
+	RepoKey          string `json:"repo_key"`
+	RepoName         string `json:"repo_name"`
+	RepoRoot         string `json:"repo_root"`
+	CheckoutPath     string `json:"checkout_path"`
+	IsLinkedWorktree bool   `json:"is_linked_worktree"`
 }
 
 // Workspace is a top-level Space in the topology.
 type Workspace struct {
-	WorkspaceID string      `json:"workspace_id"`
-	Number      int         `json:"number"`
-	Label       string      `json:"label"`
-	Focused     bool        `json:"focused"`
-	PaneCount   int         `json:"pane_count"`
-	TabCount    int         `json:"tab_count"`
-	ActiveTabID string      `json:"active_tab_id"`
-	AgentStatus AgentStatus `json:"agent_status"`
+	WorkspaceID string             `json:"workspace_id"`
+	Number      int                `json:"number"`
+	Label       string             `json:"label"`
+	Focused     bool               `json:"focused"`
+	PaneCount   int                `json:"pane_count"`
+	TabCount    int                `json:"tab_count"`
+	ActiveTabID string             `json:"active_tab_id"`
+	AgentStatus AgentStatus        `json:"agent_status"`
+	Worktree    *WorkspaceWorktree `json:"worktree,omitempty"`
 }
 
 // Tab is a terminal layout within a workspace.
@@ -97,6 +116,8 @@ type Agent struct {
 	TerminalID             string        `json:"terminal_id"`
 	Agent                  string        `json:"agent"`
 	Name                   string        `json:"name,omitempty"`
+	DisplayAgent           string        `json:"display_agent,omitempty"`
+	Title                  string        `json:"title,omitempty"`
 	AgentSession           *AgentSession `json:"agent_session,omitempty"`
 	AgentStatus            AgentStatus   `json:"agent_status"`
 	WorkspaceID            string        `json:"workspace_id"`
@@ -104,6 +125,7 @@ type Agent struct {
 	PaneID                 string        `json:"pane_id"`
 	Focused                bool          `json:"focused"`
 	InteractiveReady       bool          `json:"interactive_ready,omitempty"`
+	LaunchPending          bool          `json:"launch_pending,omitempty"`
 	ScreenDetectionSkipped bool          `json:"screen_detection_skipped,omitempty"`
 	StateChangeSeq         int64         `json:"state_change_seq"`
 	CWD                    string        `json:"cwd"`

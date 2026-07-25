@@ -6,6 +6,8 @@ import (
 	"fmt"
 	"sync"
 	"time"
+
+	"github.com/matheus3301/herdr-phone/internal/herdr"
 )
 
 // agentKindsTTL bounds how often startable agent kinds are re-discovered. A fresh
@@ -71,7 +73,7 @@ func (a *agentKinds) list(ctx context.Context) ([]string, error) {
 // return an error so an agent is never started against a stale or guessed set.
 func (a *agentKinds) validate(ctx context.Context, kind string) error {
 	if kind == "" {
-		return fmt.Errorf("integration: agent.start requires a kind")
+		return herdr.NewError(herdr.CodeInvalidParams, "agent.start requires a kind")
 	}
 	kinds, err := a.list(ctx)
 	if err != nil {
@@ -82,7 +84,7 @@ func (a *agentKinds) validate(ctx context.Context, kind string) error {
 			return nil
 		}
 	}
-	return fmt.Errorf("integration: agent kind %q is not one this Herdr build can start", kind)
+	return herdr.NewError(herdr.CodeInvalidParams, fmt.Sprintf("agent kind %q is not one this herdr build can start", kind))
 }
 
 // capabilitiesBase holds the non-kind capability fields learned at handshake.

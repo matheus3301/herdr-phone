@@ -7,11 +7,12 @@
 [![cloudflared](https://img.shields.io/badge/cloudflared-2026.7.2-F38020?logo=cloudflare)](https://github.com/cloudflare/cloudflared)
 [![License: MIT](https://img.shields.io/badge/license-MIT-green)](LICENSE)
 
-**Herdr Phone** lets one authenticated operator drive the [Herdr](https://herdr.dev)
-session running on their Mac from a phone. See your Spaces, tabs, panes,
-worktrees, and agents; open a real interactive terminal; prompt and control
-coding agents; and safely create, rename, move, resize, zoom, split, and close
-Herdr resources — one-handed, from anywhere.
+**Herdr Phone** lets one authenticated operator supervise the
+[Herdr](https://herdr.dev) session running on their Mac from a phone. An
+attention-first inbox shows which coding agents need you, which are working, and
+which changed while you were away. Start a scoped agent run, send instructions,
+inspect truthful observed output, manage workspaces, and open the full console
+only when direct terminal control is necessary.
 
 It is a Go 1.26 relay with a React + TypeScript PWA embedded into the binary. It
 starts and supervises `cloudflared`, binds its origin to loopback only, and
@@ -49,20 +50,30 @@ on every request. Quick Tunnels require explicit opt-in.
 - [Development](#development)
 - [Releasing](#releasing)
 - [Troubleshooting](#troubleshooting)
-- [Non-goals (v0.1.0)](#non-goals-v010)
+- [Non-goals (v0.2.0)](#non-goals-v020)
 - [Contributing](#contributing)
 - [License](#license)
 
 ## Features
 
-- **Full topology.** Spaces/workspaces, tabs, panes, worktrees, and agents, kept
-  live from Herdr's `session.snapshot` with events as wakeups.
-- **A real terminal.** A fully interactive xterm.js terminal bridged to Herdr's
-  supported terminal controller — resize with the viewport, scroll, reconnect,
-  and explicitly take over an existing controller.
-- **Blocked-first herd view.** Agents that need you lead; working agents follow;
-  quiet agents collapse. Opening an agent shows the terminal before any response
-  controls — no blind one-tap approvals.
+- **Agent-first inbox.** Runs are grouped as Needs you, Working, Updated, Idle,
+  and Status unknown. Opening a run never changes focus on the Mac.
+- **Run control, not terminal cosplay.** Send an instruction, retain drafts
+  through connection failures, distinguish rejection from uncertain delivery,
+  and never retry a possibly-delivered instruction automatically.
+- **Truthful observed output.** A versioned, generation-bound run API returns
+  identity, context, status, and bounded terminal output. Terminal bytes are
+  always labelled as recent output, never fabricated into assistant messages,
+  tool calls, approvals, diffs, or test results.
+- **Start run.** Choose an existing workspace, create a workspace, or branch a
+  linked worktree; select a server-discovered agent kind; then see every launch
+  step and recover from partial success without undoing valid resources.
+- **Workspace management.** Inspect worktree provenance, tabs, panes, agents,
+  and lifecycle generations, with complete advanced move, split, resize, zoom,
+  swap, rename, focus, and confirmed-close controls.
+- **Full console fallback.** A lazy-loaded xterm.js console is one tap away for
+  blocked, unknown, or recovery states. It resizes, scrolls, reconnects, detects
+  pane replacement, and requires explicit confirmation to take over input.
 - **Safe structural controls.** Create, rename, move, resize, zoom, split, swap,
   and confirmed-close, each with an explicit, single-use server confirmation for
   destructive actions.
@@ -71,7 +82,7 @@ on every request. Quick Tunnels require explicit opt-in.
   Origin/CSRF/CSP, and terminal escape-sequence filtering.
 - **Self-contained.** One static binary with the PWA embedded — no runtime CDN,
   no analytics, no telemetry, no hidden network access.
-- **macOS, amd64 and arm64** for v0.1.0.
+- **macOS, amd64 and arm64** for v0.2.0.
 
 ## How it works
 
@@ -100,7 +111,7 @@ process and tears them down on exit; killing the daemon tears down the tunnel.
 
 ## Prerequisites
 
-- **macOS** (Apple silicon or Intel). v0.1.0 is macOS-only.
+- **macOS** (Apple silicon or Intel). v0.2.0 is macOS-only.
 - [**Herdr**](https://herdr.dev) **v0.7.5+** with a working `plugin` command
   (verify with `herdr plugin`).
 - [**cloudflared**](https://github.com/cloudflare/cloudflared). It is **never**
@@ -153,7 +164,7 @@ a signed build-provenance attestation.
   this repository's release workflow, not swapped after the fact:
 
   ```sh
-  gh attestation verify herdr-phone_0.1.0_darwin_arm64.tar.gz \
+  gh attestation verify herdr-phone_0.2.0_darwin_arm64.tar.gz \
     --repo matheus3301/herdr-phone
   ```
 
@@ -432,7 +443,7 @@ herdr plugin log list --plugin matheus3301.phone
 - **`doctor`** checks configuration and connectivity and prints exact
   Homebrew/manual guidance if `cloudflared` is missing. It never prints secrets.
 
-The daemon does **not** start at login in v0.1.0 (an optional LaunchAgent is
+The daemon does **not** start at login in v0.2.0 (an optional LaunchAgent is
 documented as future work but never generated silently).
 
 ## Pairing and QR
@@ -471,22 +482,31 @@ jittered exponential backoff.
 
 ## Feature guide
 
-Everything is driven by explicit resource IDs; Herdr UI focus is never relied on.
+Everything is driven by explicit resource IDs and pane generations; reading the
+phone UI never relies on or silently changes Herdr UI focus.
 
-- **Spaces/workspaces:** list, switch/focus, create with cwd and label, rename,
-  and confirmed close. Worktree provenance and aggregate agent status are shown.
-- **Tabs:** list in authoritative server order, switch/focus, create, rename,
-  move, and confirmed close.
-- **Panes:** list and render layout, focus, split right/down, resize, zoom, swap,
-  move to another tab / a new tab / a new workspace, rename, and confirmed close.
-  Open a fully interactive terminal, resize with the viewport, scroll, reconnect,
-  and explicitly take over an existing controller.
-- **Agents:** blocked-first list with state, kind, name, title, location, cwd,
-  and last transition. Focus/open terminal, prompt, send validated logical keys,
-  rename, and start a **server-discovered** agent kind in an available pane (no
-  hard-coded kind list).
-- **Worktrees:** list, create, open, and confirmed remove. Removing a dirty
-  worktree requires a second, explicit force confirmation.
+- **Agents:** the default route is an attention inbox. `done` is displayed as
+  Updated, never as success; unknown remains separate from Idle.
+- **Runs:** a run binds an opaque ID to a pane generation and agent incarnation.
+  Its detail view keeps exact workspace, worktree, tab, pane, and agent context
+  next to the composer. Replacing the pane freezes the old run instead of
+  silently rebinding it to the new occupant.
+- **Instructions:** accepted instructions enter the local runline. Rejected
+  instructions remain editable. A timeout or disconnect becomes Delivery
+  unknown with an explicit warning and choice, never an automatic retry.
+- **Observed output:** supported relays use `GET /api/v1/runs` and the
+  generation-guarded run detail endpoint. Older relays fall back by capability
+  to snapshot projection plus `pane.read`; fallback IDs are internal only.
+- **Start run:** choose the objective, execution location, and agent. Workspace,
+  pane, agent, and prompt creation remain visible independent operations, so a
+  later failure never hides or deletes earlier success.
+- **Workspaces:** inspect active runs and linked-worktree provenance first, then
+  use the advanced view for tabs, panes, layout, agent startup, and destructive
+  controls. Worktree removal is available only when Herdr identifies the
+  workspace as a removable linked checkout.
+- **Console:** direct terminal control is an expert fallback rather than primary
+  navigation. The real xterm.js controller preserves lifecycle generation across
+  reconnects and names pane replacement instead of retrying forever.
 
 Structural destructive actions use a confirmation dialog plus a single-use server
 nonce bound to the operation, resource id, lifecycle generation, and session.
@@ -528,17 +548,18 @@ revocation steps** for a compromised session, device, or tunnel token.
 ## Architecture
 
 ```text
-cmd/herdr-phone ──> internal/app          # CLI and orchestration
-                    ├──> internal/config    # strict TOML load + validation
-                    ├──> internal/auth      # pairing, sessions, Access JWT/JWKS
-                    ├──> internal/daemon     # lifecycle, control socket, runtime state
-                    ├──> internal/herdr      # typed Herdr socket client and models
-                    ├──> internal/state      # snapshot cache, event wakeups, generations
-                    ├──> internal/server     # HTTP, WebSocket, protocol, audit
-                    ├──> internal/terminal   # Herdr terminal-controller bridge
-                    ├──> internal/tunnel     # cloudflared process and modes
-                    ├──> internal/security   # middleware, redaction, ANSI filtering
-                    └──> internal/buildinfo  # one version source
+cmd/herdr-phone ──> internal/app           # CLI dispatch and doctor
+                    └──> internal/integration # production composition and teardown
+                         ├──> internal/config   # strict TOML load + validation
+                         ├──> internal/auth     # pairing, sessions, Access JWT/JWKS
+                         ├──> internal/daemon   # lifecycle and runtime state
+                         ├──> internal/herdr    # typed Herdr socket client and models
+                         ├──> internal/state    # snapshot/run projections + generations
+                         ├──> internal/server   # routes, middleware, run API, audit
+                         ├──> internal/terminal # Herdr terminal-controller bridge
+                         ├──> internal/tunnel   # cloudflared process and modes
+                         ├──> internal/security # redaction and ANSI filtering
+                         └──> internal/webui    # embedded production PWA
 web/                # React + TypeScript + Vite + Tailwind v4 + xterm.js PWA,
                     # embedded into the Go binary (no runtime CDN)
 ```
@@ -570,6 +591,7 @@ make test          # go test ./...
 make test-race     # go test -race ./...
 make test-web      # frontend unit and component tests
 make test-e2e      # Playwright mobile journeys (Chromium Pixel 7, WebKit iPhone 15)
+make screenshots   # explicitly refresh tracked light/dark visual-review captures
 make coverage      # coverage.txt with an enforced 80% Go threshold
 make build-web     # locked frontend install + build into web/dist
 make build         # build ./bin/herdr-phone with the frontend embedded
@@ -601,8 +623,8 @@ version matches `herdr-plugin.toml` and the binary's build info, on a commit tha
 is already on `main`:
 
 ```sh
-git tag -a v0.1.0 -m "herdr-phone v0.1.0"
-git push origin v0.1.0
+git tag -a v0.2.0 -m "herdr-phone v0.2.0"
+git push origin v0.2.0
 ```
 
 The release workflow requires an annotated/signed tag whose commit is on `main`,
@@ -649,7 +671,7 @@ the publish job, and forks never receive secrets (`pull_request`, not
   [SECURITY.md](SECURITY.md): stop the daemon, revoke Access sessions, and rotate
   the tunnel token.
 
-## Non-goals (v0.1.0)
+## Non-goals (v0.2.0)
 
 No Windows host support; no native iOS/Android apps, APNs, or background push
 actions; no multi-user collaboration or simultaneous terminal controllers; no

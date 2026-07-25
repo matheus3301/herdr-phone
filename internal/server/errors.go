@@ -27,7 +27,40 @@ const (
 	codeDeadlineExceeded    = "deadline_exceeded"
 	codeUnavailable         = "unavailable"
 	codeInternal            = "internal"
+	// codeUnsupported marks an operation the connected Herdr build cannot
+	// perform (feature disabled, unsupported platform, incompatible protocol).
+	// Retrying is pointless; the client must hide or disable the affordance.
+	codeUnsupported = "unsupported"
+	// codeRunUnavailable marks a live pane with no addressable agent run.
+	codeRunUnavailable = "run_unavailable"
+	// codeRunReadFailed marks an unclassified failure reading observed run
+	// output. The run identity may still be valid.
+	codeRunReadFailed = "run_read_failed"
 )
+
+// mutationMessages are the static, content-free messages returned for each
+// mutation error code. An upstream message is never forwarded: it can quote pane
+// content, a path, or a command.
+var mutationMessages = map[string]string{
+	codeNotFound:            "resource not found",
+	codeBadRequest:          "operation rejected: invalid parameters",
+	codeUnsupported:         "operation not supported by this herdr build",
+	codeConflict:            "operation conflicts with another in progress",
+	codeDeadlineExceeded:    "operation timed out",
+	codeUnavailable:         "herdr unavailable",
+	codeInternal:            "operation failed",
+	codeConfirmationNeeded:  "operation outcome uncertain; obtain a fresh confirmation to retry",
+	codeGenerationStale:     "resource changed; refresh and retry",
+	codeConfirmationInvalid: "confirmation invalid or expired",
+}
+
+// mutationMessage returns the static message for a mutation error code.
+func mutationMessage(code string) string {
+	if m, ok := mutationMessages[code]; ok {
+		return m
+	}
+	return "operation failed"
+}
 
 // apiError is the body of a non-mutation error response.
 type apiError struct {

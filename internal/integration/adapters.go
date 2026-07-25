@@ -94,6 +94,53 @@ func (s *stateAdapter) Capabilities() json.RawMessage {
 	return s.capsBase.capabilitiesJSON(ctx, s.kinds)
 }
 
+// Runs maps the state engine's run projection onto the server's wire type. The
+// mapping is total and mechanical: no field is synthesized, inferred, or
+// defaulted here, so the server can never present something the engine did not
+// observe. Content-free by construction — the projection holds no output.
+func (s *stateAdapter) Runs() server.RunProjection {
+	set := s.engine.Runs()
+	if len(set.Runs) == 0 {
+		return server.RunProjection{SnapshotHash: set.SnapshotHash}
+	}
+	out := make([]server.RunSummary, 0, len(set.Runs))
+	for _, r := range set.Runs {
+		summary := server.RunSummary{
+			RunID:            r.RunID,
+			PaneID:           r.PaneID,
+			PaneGeneration:   r.PaneGeneration,
+			AgentIncarnation: r.AgentIncarnation,
+			WorkspaceID:      r.WorkspaceID,
+			WorkspaceLabel:   r.WorkspaceLabel,
+			TabID:            r.TabID,
+			TabLabel:         r.TabLabel,
+			TerminalID:       r.TerminalID,
+			AgentKind:        r.AgentKind,
+			AgentName:        r.AgentName,
+			DisplayAgent:     r.DisplayAgent,
+			Title:            r.Title,
+			Status:           string(r.Status),
+			InteractiveReady: r.InteractiveReady,
+			LaunchPending:    r.LaunchPending,
+			Focused:          r.Focused,
+			CWD:              r.CWD,
+			ForegroundCWD:    r.ForegroundCWD,
+			Revision:         r.Revision,
+			StateChangeSeq:   r.StateChangeSeq,
+		}
+		if wt := r.Worktree; wt != nil {
+			summary.Worktree = &server.RunWorktree{
+				RepoName:         wt.RepoName,
+				RepoRoot:         wt.RepoRoot,
+				CheckoutPath:     wt.CheckoutPath,
+				IsLinkedWorktree: wt.IsLinkedWorktree,
+			}
+		}
+		out = append(out, summary)
+	}
+	return server.RunProjection{SnapshotHash: set.SnapshotHash, Runs: out}
+}
+
 func (s *stateAdapter) ReadPane(ctx context.Context, paneID, source string, lines int) ([]byte, error) {
 	src, err := herdr.ParseReadSource(source)
 	if err != nil {

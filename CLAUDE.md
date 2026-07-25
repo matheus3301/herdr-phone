@@ -91,6 +91,14 @@ Key invariants that span files:
   `CrossOriginProtection` → CSRF → content-type/body/rate/deadline). A test asserts
   route-wide coverage. WS handlers set `InsecureSkipVerify: true` *only* because `wrap`
   already enforced the exact Origin allowlist before upgrade.
+- **Run mode is chosen by capability, never by probing.** `GET /capabilities`'s
+  `runs` document (SPEC §12.1) decides it: with it, the browser uses `GET /runs`
+  and `GET /runs/{pane_id}` and treats the relay's opaque `run_id` as
+  authoritative; without it, it falls back to the snapshot projection plus
+  `pane.read`, whose ids are internal only. `web/src/lib/run-source.ts` owns that
+  decision; `web/src/lib/run-adapter.ts` owns the read. Unknown part types and
+  unknown statuses are ignored/`unknown`, never guessed at, and observed terminal
+  output is never rendered as an agent message.
 - Frontend state is `useSyncExternalStore` by design. Do not add a data library.
 
 ## Security invariants — do not weaken
@@ -153,7 +161,7 @@ active Herdr session.
 
 ## Release
 
-`v0.1.0` is published. Cut a release by pushing an **annotated** `vX.Y.Z` tag on a commit
+Cut a release by pushing an **annotated** `vX.Y.Z` tag on a commit
 already on `main`; the version must match `herdr-plugin.toml` and `internal/buildinfo`
 (the workflow verifies tag object, `main` ancestry, and version agreement). GoReleaser
 publishes Darwin arm64/amd64 `.tar.gz`, `checksums.txt`, Syft SBOMs, and a keyless

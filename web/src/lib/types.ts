@@ -15,6 +15,23 @@ export type AgentStatus = (typeof AGENT_STATUSES)[number];
 
 /* ============================================================ wire types === */
 
+/**
+ * `WorkspaceInfo.worktree` — the git checkout provenance Herdr reports for a
+ * workspace, and the ONLY worktree context a `session.snapshot` carries (SPEC
+ * §3.1; `WorkspaceWorktreeInfo` in `herdr api schema --json`, protocol 17).
+ *
+ * Note what is absent: there is **no branch**. A branch is only available from a
+ * separate `worktree.list` call, which the relay does not make, so nothing in
+ * this app may present a branch name as fact.
+ */
+export interface WireWorkspaceWorktree {
+  repo_key: string;
+  repo_name: string;
+  repo_root: string;
+  checkout_path: string;
+  is_linked_worktree: boolean;
+}
+
 export interface WireWorkspace {
   workspace_id: string;
   number: number;
@@ -24,6 +41,8 @@ export interface WireWorkspace {
   tab_count: number;
   active_tab_id: string;
   agent_status: AgentStatus;
+  /** Present when Herdr resolved the workspace to a git checkout. */
+  worktree?: WireWorkspaceWorktree | null;
 }
 
 export interface WireTab {
@@ -110,18 +129,13 @@ export interface WireLayout {
   splits: unknown[];
 }
 
-export interface WireWorktree {
-  path: string;
-  label: string;
-  branch?: string;
-  is_bare: boolean;
-  is_detached: boolean;
-  is_linked_worktree: boolean;
-  is_prunable: boolean;
-  open_workspace_id?: string;
-}
-
-/** herdr.Snapshot — the normalized Herdr topology. */
+/**
+ * herdr.Snapshot — the normalized Herdr topology.
+ *
+ * There is deliberately no top-level `worktrees` array: `SessionSnapshot`
+ * declares none, so the relay no longer carries one either. Worktree context
+ * comes from `workspaces[].worktree`.
+ */
 export interface WireTopology {
   version: string;
   protocol: number;
@@ -133,7 +147,6 @@ export interface WireTopology {
   panes: WirePane[];
   layouts: WireLayout[];
   agents: WireAgent[];
-  worktrees: WireWorktree[];
 }
 
 /** state.Snapshot — carried inside the server envelope's `data` field. */
@@ -187,7 +200,104 @@ export interface WireCapabilities {
     max_body_bytes: number;
     max_pane_read_lines: number;
     confirmation_ttl_seconds: number;
+    /** Present only on a relay that ships the structured run contract. */
+    max_run_output_lines?: number;
+    max_run_output_bytes?: number;
+    max_runs?: number;
   };
+  /** Absent on a relay older than the structured run contract (SPEC §12.1). */
+  runs?: WireRunCapabilities;
+}
+
+/* ------------------------------------------------- structured run contract */
+
+/**
+ * SPEC §12.1, contract version 1 — mirrors internal/server/runs.go byte for
+ * byte. Every semantic flag is `false` on Herdr 0.7.5: the relay is
+ * authoritative about identity and status and explicit about what it cannot
+ * know, and the UI must gate presentation on these flags rather than infer
+ * structure the relay never advertised.
+ */
+export interface WireRunCapabilities {
+  contract_version: number;
+  supported: boolean;
+  structured_messages: boolean;
+  structured_tool_calls: boolean;
+  structured_interactions: boolean;
+  structured_diffs: boolean;
+  structured_tests: boolean;
+  structured_plans: boolean;
+  observed_terminal_output: boolean;
+  part_types: string[];
+  output_sources: string[];
+  max_output_bytes: number;
+  max_output_lines: number;
+  max_runs: number;
+}
+
+export interface WireRunWorktree {
+  repo_name: string;
+  repo_root: string;
+  checkout_path: string;
+  is_linked_worktree: boolean;
+}
+
+/** One run's authoritative identity, execution context, and status. Never output. */
+export interface WireRunSummary {
+  run_id: string;
+  pane_id: string;
+  pane_generation: number;
+  agent_incarnation: string;
+  workspace_id: string;
+  workspace_label?: string;
+  tab_id: string;
+  tab_label?: string;
+  terminal_id: string;
+  agent_kind: string;
+  agent_name?: string;
+  display_agent?: string;
+  title?: string;
+  /** idle | working | blocked | done | unknown. Anything else reads as unknown. */
+  status: string;
+  interactive_ready: boolean;
+  launch_pending: boolean;
+  focused: boolean;
+  cwd?: string;
+  foreground_cwd?: string;
+  worktree?: WireRunWorktree;
+  revision: number;
+  state_change_seq: number;
+}
+
+export interface WireRunsResponse {
+  contract_version: number;
+  capabilities: WireRunCapabilities;
+  snapshot_hash: string;
+  runs: WireRunSummary[];
+  /** True when the relay's max_runs bound applied, so a short list is not complete. */
+  truncated: boolean;
+}
+
+/**
+ * The only part type this contract emits. It is terminal output Herdr rendered,
+ * labelled as such: it carries no role and must never be presented as an
+ * assistant message. A client ignores part types it does not know.
+ */
+export interface WireObservedOutputPart {
+  type: string;
+  source: string;
+  format: string;
+  lines: number;
+  bytes: number;
+  truncated: boolean;
+  text: string;
+}
+
+export interface WireRunResponse {
+  contract_version: number;
+  capabilities: WireRunCapabilities;
+  run: WireRunSummary;
+  parts: WireObservedOutputPart[];
 }
 
 export interface WireIdentity {
@@ -237,6 +347,22 @@ export interface WirePaneReadResponse {
 
 /* ============================================================ view types === */
 
+/**
+ * A workspace's git checkout provenance, straight from `workspaces[].worktree`.
+ *
+ * `isLinkedWorktree` is what makes a removal control honest: `worktree.remove`
+ * takes the *workspace* a worktree is open in and git refuses to remove a main
+ * checkout, so a linked worktree is exactly the removable case. There is no
+ * branch here because the snapshot carries none.
+ */
+export interface WorkspaceWorktree {
+  repoKey: string;
+  repoName: string;
+  repoRoot: string;
+  checkoutPath: string;
+  isLinkedWorktree: boolean;
+}
+
 export interface Workspace {
   id: string;
   number: number;
@@ -246,8 +372,8 @@ export interface Workspace {
   tabCount: number;
   paneCount: number;
   agentStatus: AgentStatus;
-  /** Provenance when a worktree is open in this workspace. */
-  worktree?: { path: string; branch: string | null };
+  /** Provenance when Herdr resolved this workspace to a git checkout. */
+  worktree?: WorkspaceWorktree;
 }
 
 export interface Tab {
@@ -297,19 +423,6 @@ export interface Agent {
   interactiveReady: boolean;
 }
 
-export interface Worktree {
-  /** Stable UI key (the backend worktree has no id). */
-  path: string;
-  label: string;
-  branch: string | null;
-  isDetached: boolean;
-  isPrunable: boolean;
-  /** The workspace this worktree is open in, if any. */
-  openWorkspaceId: string | null;
-  /** Removable only when open in a workspace (worktree.remove takes a workspace id). */
-  removable: boolean;
-}
-
 export interface Snapshot {
   /** Envelope version (state seq); advisory. */
   version: number;
@@ -321,14 +434,38 @@ export interface Snapshot {
   tabs: Tab[];
   panes: Pane[];
   agents: Agent[];
-  worktrees: Worktree[];
   focusedWorkspaceId: string | null;
   focusedTabId: string | null;
   focusedPaneId: string | null;
 }
 
+/**
+ * The structured run contract as the UI consumes it. Null when the relay does
+ * not advertise it, or advertises a contract version this build does not
+ * implement — either way the UI fails closed to the snapshot + `pane.read`
+ * fallback rather than guessing at a shape it cannot verify.
+ */
+export interface RunContract {
+  contractVersion: number;
+  supported: boolean;
+  structuredMessages: boolean;
+  structuredToolCalls: boolean;
+  structuredInteractions: boolean;
+  structuredDiffs: boolean;
+  structuredTests: boolean;
+  structuredPlans: boolean;
+  observedTerminalOutput: boolean;
+  partTypes: string[];
+  outputSources: string[];
+  maxOutputBytes: number;
+  maxOutputLines: number;
+  maxRuns: number;
+}
+
 export interface Capabilities {
   operations: string[];
+  /** Null on a relay without the versioned run contract (SPEC §12.1). */
+  runs: RunContract | null;
   agentKinds: string[];
   /** False when the backend could not discover startable kinds (disables start). */
   agentKindsAvailable: boolean;

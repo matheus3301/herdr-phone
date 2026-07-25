@@ -5,7 +5,7 @@ package config
 import "errors"
 
 // errUnsupportedPlatform is returned by the filesystem verification helpers on
-// non-unix platforms. herdr-phone targets macOS for v0.1.0; these guards keep
+// non-unix platforms. herdr-phone targets macOS for v0.2.0; these guards keep
 // the package cross-compilable without pretending to enforce unix permissions.
 var errUnsupportedPlatform = errors.New("config: filesystem verification is only supported on unix hosts")
 

@@ -27,7 +27,7 @@ body:
     attributes:
       label: Scope check
       options:
-        - label: This is consistent with the project's v0.1.0 non-goals (no Windows host, no native iOS/Android apps or APNs, no multi-user or simultaneous terminal controllers, no automatic Cloudflare/DNS/Access provisioning, no automatic cloudflared install, no multi-session Herdr aggregation).
+        - label: This is consistent with the project's v0.2.0 non-goals (no Windows host, no native iOS/Android apps or APNs, no multi-user or simultaneous terminal controllers, no automatic Cloudflare/DNS/Access provisioning, no automatic cloudflared install, no multi-session Herdr aggregation).
           required: false
         - label: This does not weaken the secure-by-default posture (loopback-only origin, Access JWT validation, mandatory pairing, strict Origin/CSRF/CSP, ANSI filtering).
           required: false

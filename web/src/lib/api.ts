@@ -16,6 +16,8 @@ import type {
   WireMutationResponse,
   WirePaneReadResponse,
   WirePairResponse,
+  WireRunResponse,
+  WireRunsResponse,
   WireSessionResponse,
   WireSnapshotEnvelope,
   ReadSource,
@@ -159,6 +161,41 @@ export async function readPane(
     `/panes/${encodeURIComponent(paneId)}/read?${q.toString()}`,
     { signal },
   );
+  return data;
+}
+
+/* ------------------------------------------- structured run contract (§12.1) */
+
+/**
+ * The bounded run inbox. Carries identity, context, and status only — never
+ * output — so it is safe to refetch on every snapshot wakeup. Every request is
+ * `no-store`; run state is never cached, by the browser or the service worker.
+ */
+export async function getRuns(signal?: AbortSignal): Promise<WireRunsResponse> {
+  const { data } = await request<WireRunsResponse>("/runs", { signal });
+  return data;
+}
+
+export interface RunReadOptions {
+  /** Mandatory. Live generations start at 1; the relay rejects 0 or absent. */
+  expectedGeneration: number;
+  source?: ReadSource;
+  lines?: number;
+  signal?: AbortSignal;
+}
+
+/**
+ * One run plus its bounded parts, guarded by the canonical pane id and the
+ * generation the caller asserts — exactly like a pane-scoped mutation, so a
+ * client can never read through a recycled pane.
+ */
+export async function getRun(paneId: string, opts: RunReadOptions): Promise<WireRunResponse> {
+  const q = new URLSearchParams({ expected_generation: String(opts.expectedGeneration) });
+  if (opts.source) q.set("source", opts.source);
+  if (opts.lines !== undefined) q.set("lines", String(opts.lines));
+  const { data } = await request<WireRunResponse>(`/runs/${encodeURIComponent(paneId)}?${q.toString()}`, {
+    signal: opts.signal,
+  });
   return data;
 }
 

@@ -35,9 +35,9 @@ export function DirectoryPicker({ value, onChange }: { value: string; onChange: 
   }, [value]);
 
   return (
-    <div className="rounded-[10px] border border-frame bg-hull">
+    <div className="rounded-[10px] border border-seam bg-hull">
       <div className="flex items-center justify-between gap-2 border-b border-seam px-3 py-2">
-        <span className="truncate font-utility text-[12px] text-tide" title={value}>
+        <span className="truncate tabular text-tide" title={value}>
           {shortPath(value, 3)}
         </span>
         {listing?.parent && (

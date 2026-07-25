@@ -1,54 +1,81 @@
 @import "tailwindcss";
 
-/* Dark is the primary field-instrument mode. `.light` opts into the pale variant. */
+/* Dark is the primary mode. `.light` opts into the pale variant. */
 @custom-variant light (&:where(.light, .light *));
 
 /*
- * Herdr Phone visual system (SPEC §14.2).
- * Palette: Deck / Bulkhead / Mist / Brass / Tide / Flare.
- * This is deliberately NOT a stock shadcn dashboard: no card grid, no gradients,
- * no glass. Surfaces are stacked edges and inset seams evoking a compact field
- * instrument. Semantic tokens below map onto the six named colors.
+ * Dispatch Log — the Herdr Phone visual system.
+ *
+ * The product is a control plane for supervising coding agents from a phone, so
+ * the surface reads like a quiet operations log: hairline seams instead of card
+ * outlines, sentence-case labels instead of tiny uppercase mono, and one
+ * signature element — the runline, a vertical flight recorder that carries
+ * chronological activity down the left edge of a run.
+ *
+ * Everything below is a semantic token. Components never hard-code a hex value,
+ * and the light theme redefines the same names so a single component tree serves
+ * both themes. src/lib/theme-contrast.test.ts parses these blocks and fails the
+ * build if a pairing that actually ships stops meeting WCAG.
  */
 @theme {
-  --color-deck: #101820;
-  --color-bulkhead: #192732;
-  --color-mist: #dce7e4;
-  --color-brass: #e3b341;
-  --color-tide: #50a8a3;
-  --color-flare: #f1745e;
+  /* ---- surfaces (dark) ------------------------------------------------- */
+  --color-deck: #101820; /* application background */
+  --color-bulkhead: #192732; /* raised: nav, composer, sheets */
+  --color-hull: #0b1117; /* recessed well: inputs, output blocks */
+  --color-seam: #1e2c37; /* hairline separator */
+  --color-frame: #33485a; /* deliberate border */
 
-  /* Derived structural tones */
-  --color-hull: #0b1117; /* deeper than deck, for wells behind the terminal */
-  --color-seam: #0c141b; /* inset seam line */
-  --color-frame: #2b3d4a; /* raised edge highlight */
-  --color-muted-ink: #8ba0a6; /* dimmed mist for secondary text */
+  /* ---- ink ------------------------------------------------------------- */
+  --color-mist: #dce7e4; /* primary text */
+  --color-muted-ink: #9aafb5; /* secondary text */
+  --color-faint-ink: #7f959c; /* tertiary: timestamps, ids */
 
-  /* Ink that sits ON a solid accent (button labels). It flips with the theme so
-   * a bright accent gets dark ink (dark mode) and a darkened accent gets light
-   * ink (light mode) — always a readable, accessible pairing. */
+  /* ---- meaning --------------------------------------------------------- */
+  --color-brass: #e3b341; /* selected context, deliberate primary action */
+  --color-tide: #50a8a3; /* connected, active, working */
+  --color-flare: #f1745e; /* attention, destructive */
+
+  /* Ink that sits ON a solid accent. Flips with the theme so a bright accent
+   * takes dark ink and a darkened accent takes light ink. */
   --color-onaccent: #101820;
 
-  /* The live terminal is an intrinsically dark field instrument. Its surface is
-   * FIXED dark in both themes (and is NOT overridden under .light) so xterm's
-   * pale foreground never lands on a pale surface. */
-  --color-terminal: #101820;
+  /* The runline rail: quiet enough to recede, present enough to read as one
+   * continuous recording. */
+  --color-runline: #365062;
 
-  /* Semantic aliases used by primitives */
+  /* The console is an intrinsically dark instrument. Fixed in BOTH themes so
+   * xterm's pale foreground never lands on a pale surface. */
+  --color-terminal: #101820;
+  --color-terminal-ink: #dce7e4;
+
+  /* ---- semantic aliases used by the primitives -------------------------- */
   --color-background: var(--color-deck);
   --color-surface: var(--color-bulkhead);
+  --color-well: var(--color-hull);
   --color-foreground: var(--color-mist);
   --color-muted: var(--color-muted-ink);
   --color-accent: var(--color-brass);
   --color-ok: var(--color-tide);
   --color-danger: var(--color-flare);
-  --color-border: var(--color-frame);
+  --color-border: var(--color-seam);
   --color-ring: var(--color-brass);
 
-  --font-sans: "Spline Sans Variable", ui-sans-serif, system-ui, -apple-system, sans-serif;
-  --font-mono: "Commit Mono", ui-monospace, "SF Mono", "Cascadia Code", monospace;
+  /* ---- type ------------------------------------------------------------- */
+  /* Public Sans: large x-height, open apertures, sturdy at 15-17px on a phone,
+   * and institutional rather than SaaS-generic. IBM Plex Mono is restrained and
+   * reserved for commands, paths, ids, and tabular figures. */
+  --font-sans: "Public Sans Variable", ui-sans-serif, system-ui, -apple-system, sans-serif;
+  --font-mono: "IBM Plex Mono", ui-monospace, "SF Mono", "Cascadia Code", monospace;
 
-  --radius-instrument: 10px;
+  /* Reading sizes tuned for a phone held at arm's length. */
+  --text-prose: 1.0625rem; /* 17px — agent prose and instructions */
+  --text-prose--line-height: 1.6;
+  --text-body: 0.9375rem; /* 15px — rows, controls, descriptions */
+  --text-body--line-height: 1.45;
+  --text-meta: 0.8125rem; /* 13px — context lines, timestamps */
+  --text-meta--line-height: 1.35;
+
+  --radius-log: 8px;
 
   --spacing-safe-top: env(safe-area-inset-top, 0px);
   --spacing-safe-bottom: env(safe-area-inset-bottom, 0px);
@@ -59,39 +86,38 @@
 :root {
   color-scheme: dark;
 }
+
 /*
- * Light ("pale instrument") theme. It re-defines the NAMED palette tokens
- * themselves, not just the semantic aliases, so every existing utility
- * (bg-deck / bg-bulkhead / bg-hull / text-mist / text-muted-ink / border-frame /
- * text-brass …) adapts coherently with no per-component overrides. The semantic
- * aliases (--color-background = var(--color-deck), …) cascade automatically.
- *
- * Surfaces become pale with preserved depth ordering (raised = lighter than the
- * base, wells = slightly darker). Mist/muted-ink become dark, readable ink.
- * Brass/Tide/Flare are darkened to keep accessible contrast both as text on a
- * pale surface and, paired with the light --color-onaccent, as solid buttons.
+ * Light ("day log"). It redefines the NAMED tokens so every utility adapts with
+ * no per-component override; the semantic aliases cascade automatically. Depth
+ * ordering is preserved (raised is lighter than the base, wells are darker), and
+ * the accents are darkened so they stay readable as text on a pale surface AND,
+ * paired with the light --color-onaccent, as solid buttons.
  */
 .light {
   color-scheme: light;
-  --color-deck: #edf2f0; /* base surface */
-  --color-bulkhead: #f8fbfa; /* raised controls / sheets (lighter than base) */
-  --color-hull: #e2eae7; /* inset wells: inputs, card interiors (darker than base) */
-  --color-seam: #ccd8d4;
-  --color-frame: #b3c3bf;
+  --color-deck: #f1f4f2;
+  --color-bulkhead: #ffffff;
+  --color-hull: #e4eae7;
+  --color-seam: #d2dbd7;
+  --color-frame: #a9b8b3;
 
-  --color-mist: #0f1a20; /* primary ink */
-  --color-muted-ink: #495a61; /* secondary ink (WCAG-readable on pale) */
+  --color-mist: #101a20;
+  --color-muted-ink: #445660;
+  --color-faint-ink: #52646d;
 
-  --color-brass: #7a610f; /* dark gold */
-  --color-tide: #1c6d68;
-  --color-flare: #bb2f20;
-  --color-onaccent: #f8fbfa; /* light ink on the darkened accents */
+  --color-brass: #6b5307;
+  --color-tide: #15635e;
+  --color-flare: #ad2a1b;
+  --color-onaccent: #ffffff;
+
+  --color-runline: #9aaba6;
 
   color: var(--color-foreground);
 }
 
 * {
-  border-color: var(--color-border);
+  border-color: var(--color-seam);
 }
 
 html,
@@ -105,33 +131,204 @@ body {
   background: var(--color-background);
   color: var(--color-foreground);
   font-family: var(--font-sans);
+  font-size: var(--text-body);
   -webkit-font-smoothing: antialiased;
   text-rendering: optimizeLegibility;
-  /* Prevent the whole document from bouncing; scroll happens inside panels. */
+  /* Scrolling happens inside a single owner per screen, never the document. */
   overscroll-behavior: none;
   overflow: hidden;
 }
 
-/* Focus rings are required and always visible for keyboard users (SPEC §14.4). */
+/* Focus rings are always visible for keyboard users. */
 :focus-visible {
   outline: 2px solid var(--color-brass);
   outline-offset: 2px;
   border-radius: 4px;
 }
 
-/* Numeric/utility labels use the mono face for a control-panel feel. */
-.font-utility {
+/*
+ * A route heading is focused programmatically so the change of screen is
+ * announced. It is not a keyboard-reachable control, so painting a ring around
+ * it would be a false affordance — the announcement is the point, not the box.
+ */
+[tabindex="-1"]:focus,
+[tabindex="-1"]:focus-visible {
+  outline: none;
+}
+
+/* Tabular figures wherever numbers line up (ids, counts, timestamps). */
+.tabular {
   font-family: var(--font-mono);
   font-feature-settings: "tnum" 1;
-  letter-spacing: 0.02em;
+  font-size: 0.8125rem;
+  letter-spacing: -0.01em;
 }
 
-.seam {
-  box-shadow: inset 0 1px 0 0 color-mix(in srgb, var(--color-frame) 45%, transparent),
-    inset 0 -1px 0 0 var(--color-seam);
+/*
+ * The runline. A single hairline rail with tick nodes; entries hang off it so a
+ * run reads as one continuous recording rather than a stack of cards. The rail
+ * is drawn on the list, the node on each item, so an empty runline shows nothing.
+ */
+.runline {
+  position: relative;
+  margin: 0;
+  padding: 0 0 0 1.375rem;
+  list-style: none;
+}
+.runline::before {
+  content: "";
+  position: absolute;
+  left: 0.3125rem;
+  top: 0.55rem;
+  bottom: 0.55rem;
+  width: 1px;
+  background: var(--color-runline);
+}
+.runline > li {
+  position: relative;
+}
+.runline > li::before {
+  content: "";
+  position: absolute;
+  left: -1.1875rem;
+  top: 0.5rem;
+  width: 0.4375rem;
+  height: 0.4375rem;
+  border-radius: 1px;
+  background: var(--color-deck);
+  box-shadow: inset 0 0 0 1px var(--color-runline);
+}
+.runline > li[data-tone="attention"]::before {
+  background: var(--color-flare);
+  box-shadow: inset 0 0 0 1px var(--color-flare);
+}
+.runline > li[data-tone="active"]::before {
+  background: var(--color-tide);
+  box-shadow: inset 0 0 0 1px var(--color-tide);
+}
+.runline > li[data-tone="settled"]::before {
+  background: var(--color-brass);
+  box-shadow: inset 0 0 0 1px var(--color-brass);
 }
 
-/* Minimal, instrument-like scrollbars. */
+/* The one orchestrated motion in the product: new runline activity settling
+ * into place. Status never depends on it. */
+@keyframes runline-settle {
+  from {
+    opacity: 0;
+    transform: translateY(3px);
+  }
+  to {
+    opacity: 1;
+    transform: none;
+  }
+}
+.runline > li[data-fresh="true"] {
+  animation: runline-settle 260ms ease-out both;
+}
+
+/*
+ * App shell.
+ *
+ * One grid, one component tree, both layouts. On a phone the inbox and the
+ * detail occupy the same cell and the active one is shown; at desktop width
+ * they become two columns and the primary nav moves from a bottom bar to a left
+ * rail. Because only `grid-area` and `display` change, crossing the breakpoint
+ * never unmounts a live run or console.
+ */
+.app-shell {
+  display: grid;
+  height: 100dvh;
+  grid-template-columns: 1fr;
+  grid-template-rows: auto auto minmax(0, 1fr) auto;
+  grid-template-areas: "bar" "banner" "content" "nav";
+  overflow: hidden;
+  padding-left: var(--spacing-safe-left);
+  padding-right: var(--spacing-safe-right);
+}
+/*
+ * Every shell region needs `min-width: 0`.
+ *
+ * A grid item defaults to `min-width: auto`, so its min-content width becomes a
+ * floor for the track. At 200% text zoom the app bar's own min-content width
+ * (brand + label + link state + Settings) exceeded the phone viewport and forced
+ * the single `1fr` column wider than the screen — which `overflow: hidden` then
+ * clipped, with no scrollbar to bring it back. Every control to the right of the
+ * fold became unreachable, Settings included, and Settings has no alternate
+ * route. Zeroing the floor lets the regions reflow instead (WCAG 1.4.4/1.4.10).
+ */
+.shell-bar,
+.shell-banner,
+.shell-nav,
+.shell-inbox,
+.shell-main {
+  min-width: 0;
+}
+.shell-bar {
+  grid-area: bar;
+}
+.shell-banner {
+  grid-area: banner;
+}
+.shell-inbox,
+.shell-main {
+  grid-area: content;
+  min-height: 0;
+}
+.shell-nav {
+  grid-area: nav;
+}
+.app-shell[data-detail="true"] .shell-inbox {
+  display: none;
+}
+.app-shell[data-detail="false"] .shell-main {
+  display: none;
+}
+
+@media (min-width: 1024px) {
+  .app-shell {
+    grid-template-columns: 4.5rem minmax(20rem, 24rem) minmax(0, 1fr);
+    grid-template-rows: auto auto minmax(0, 1fr);
+    grid-template-areas:
+      "nav bar bar"
+      "nav banner banner"
+      "nav inbox content";
+  }
+  .shell-inbox {
+    grid-area: inbox;
+    border-right: 1px solid var(--color-seam);
+  }
+  .app-shell[data-detail="true"] .shell-inbox,
+  .app-shell[data-detail="false"] .shell-main {
+    display: flex;
+  }
+}
+
+/* Short landscape: give the content every row it can get. */
+@media (max-height: 520px) and (orientation: landscape) {
+  .shell-bar {
+    display: none;
+  }
+}
+
+/* Skip link: off-screen until focused. */
+.skip-link {
+  position: absolute;
+  left: -9999px;
+  top: 0;
+  z-index: 100;
+}
+.skip-link:focus {
+  left: 0.5rem;
+  top: calc(0.5rem + var(--spacing-safe-top));
+  padding: 0.5rem 0.75rem;
+  border-radius: var(--radius-log);
+  background: var(--color-bulkhead);
+  color: var(--color-mist);
+  box-shadow: 0 0 0 1px var(--color-frame);
+}
+
+/* Minimal scrollbars. */
 * {
   scrollbar-width: thin;
   scrollbar-color: var(--color-frame) transparent;
@@ -145,7 +342,7 @@ body {
   border-radius: 3px;
 }
 
-/* xterm surround: the terminal sits in the deepest well. */
+/* xterm surround: the console sits in the deepest well. */
 .xterm {
   padding: 6px 8px;
   height: 100%;
@@ -163,18 +360,4 @@ body {
     transition-duration: 0.001ms !important;
     scroll-behavior: auto !important;
   }
-}
-
-/* A subtle attention pulse for blocked agents; suppressed under reduced motion. */
-@keyframes beacon {
-  0%,
-  100% {
-    opacity: 1;
-  }
-  50% {
-    opacity: 0.45;
-  }
-}
-.animate-beacon {
-  animation: beacon 1.6s ease-in-out infinite;
 }

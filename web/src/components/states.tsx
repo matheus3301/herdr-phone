@@ -5,7 +5,7 @@ import { cn } from "@/lib/utils";
 
 interface StateProps {
   title: string;
-  /** Every state names the exact recovery action (SPEC §14.4). */
+  /** Every state names the exact recovery action. */
   description: string;
   icon?: ReactNode;
   action?: { label: string; onClick: () => void };
@@ -17,24 +17,15 @@ function StateShell({ title, description, icon, action, tone = "neutral", classN
   return (
     <div
       role={tone === "danger" ? "alert" : "status"}
-      className={cn(
-        "mx-auto flex max-w-sm flex-col items-center gap-3 px-6 py-10 text-center",
-        className,
-      )}
+      className={cn("mx-auto flex max-w-sm flex-col items-center gap-3 px-6 py-10 text-center", className)}
     >
-      <div
-        className={cn(
-          "flex size-12 items-center justify-center rounded-[12px] border",
-          tone === "danger" ? "border-flare/40 text-flare" : "border-frame text-muted-ink",
-        )}
-        aria-hidden
-      >
+      <div className={cn("shrink-0", tone === "danger" ? "text-flare" : "text-muted-ink")} aria-hidden>
         {icon}
       </div>
-      <h2 className="text-base font-semibold text-mist">{title}</h2>
-      <p className="text-sm text-muted-ink">{description}</p>
+      <h2 className="text-prose font-semibold text-mist">{title}</h2>
+      <p className="text-body text-muted-ink">{description}</p>
       {action && (
-        <Button variant={tone === "danger" ? "danger" : "default"} onClick={action.onClick} className="mt-1">
+        <Button variant={tone === "danger" ? "danger" : "outline"} onClick={action.onClick} className="mt-1">
           {action.label}
         </Button>
       )}

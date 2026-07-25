@@ -75,6 +75,36 @@ func SanitizeLogLine(s string) string {
 	return b.String()
 }
 
+// SanitizeTextBlock makes multi-line terminal-derived text safe to hand to a
+// non-terminal renderer. Unlike [SanitizeLogLine] it preserves the line
+// structure — LF and TAB survive — because the text is displayed as a block, not
+// written to a log line. Everything that could steer a terminal or a log sink is
+// removed: the escape byte, every other C0 control (CR included, so a repaint
+// cannot overwrite a rendered line), DEL, C1 controls, and invalid UTF-8.
+//
+// This is a defence-in-depth strip, not a replacement for the terminal ANSI
+// filter: it is applied to text Herdr already rendered with `format:"text"`,
+// which should carry no escapes at all.
+func SanitizeTextBlock(s string) string {
+	var b strings.Builder
+	b.Grow(len(s))
+	for _, r := range s {
+		switch {
+		case r == '\n' || r == '\t':
+			b.WriteRune(r)
+		case r < 0x20 || r == 0x7F: // C0 controls (incl. ESC, CR) and DEL
+			// dropped
+		case r >= 0x80 && r <= 0x9F: // C1 controls
+			// dropped
+		case r == utf8.RuneError:
+			// dropped invalid byte
+		default:
+			b.WriteRune(r)
+		}
+	}
+	return b.String()
+}
+
 // SanitizeForLog makes an arbitrary string safe to write to a log or audit
 // sink by redacting secrets and folding control characters.
 //

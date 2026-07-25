@@ -110,6 +110,14 @@ type StateProvider interface {
 	Capabilities() json.RawMessage
 	// ReadPane returns bounded pane content for a source/line count.
 	ReadPane(ctx context.Context, paneID, source string, lines int) ([]byte, error)
+	// Runs returns the run projection of the current snapshot: its content hash
+	// plus authoritative run identity, pane generation, agent incarnation,
+	// topology context, and status for every agent run. It never contains output
+	// or transcript content, and it reads the same generation map Generation does,
+	// so a run's reported generation and a mutation guard can never disagree. It
+	// returns a zero RunProjection before the first successful poll, and must be
+	// cheap enough to call per request (the run inbox is polled).
+	Runs() RunProjection
 }
 
 // HerdrMutator executes a single allowlisted, typed Herdr operation. The server

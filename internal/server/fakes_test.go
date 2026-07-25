@@ -125,6 +125,17 @@ type fakeState struct {
 	caps    json.RawMessage
 	content map[string][]byte
 	readErr error
+	// readLines records the line bound the last ReadPane was asked for, so a test
+	// can assert the clamp that was actually applied upstream.
+	readLines int
+	runs      []RunSummary
+}
+
+// lastReadLines returns the line bound of the most recent ReadPane call.
+func (s *fakeState) lastReadLines() int {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.readLines
 }
 
 func newFakeState() *fakeState {
@@ -134,6 +145,33 @@ func newFakeState() *fakeState {
 		gens:    map[string]uint64{"pane-1": 7},
 		caps:    json.RawMessage(`{"agent_kinds":["claude","codex"]}`),
 		content: map[string][]byte{"pane-1": []byte("last visible output")},
+		runs: []RunSummary{{
+			RunID:            "pane-1@7#0123456789abcdef",
+			PaneID:           "pane-1",
+			PaneGeneration:   7,
+			AgentIncarnation: "0123456789abcdef",
+			WorkspaceID:      "w1",
+			WorkspaceLabel:   "space-api",
+			TabID:            "w1:t1",
+			TabLabel:         "agents",
+			TerminalID:       "term-1",
+			AgentKind:        "claude",
+			AgentName:        "auth",
+			DisplayAgent:     "Claude Code",
+			Title:            "Fix auth refresh",
+			Status:           "blocked",
+			InteractiveReady: true,
+			CWD:              "/code/space-api",
+			ForegroundCWD:    "/code/space-api",
+			Worktree: &RunWorktree{
+				RepoName:         "space-api",
+				RepoRoot:         "/code/space-api",
+				CheckoutPath:     "/code/space-api-auth",
+				IsLinkedWorktree: true,
+			},
+			Revision:       42,
+			StateChangeSeq: 9,
+		}},
 	}
 }
 
@@ -182,9 +220,34 @@ func (s *fakeState) Capabilities() json.RawMessage {
 	return s.caps
 }
 
-func (s *fakeState) ReadPane(_ context.Context, paneID, _ string, _ int) ([]byte, error) {
+func (s *fakeState) Runs() RunProjection {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	return RunProjection{SnapshotHash: s.snap.Hash, Runs: slices.Clone(s.runs)}
+}
+
+func (s *fakeState) setRuns(runs []RunSummary) {
+	s.mu.Lock()
+	s.runs = runs
+	s.mu.Unlock()
+}
+
+func (s *fakeState) setContent(paneID string, content []byte) {
+	s.mu.Lock()
+	s.content[paneID] = content
+	s.mu.Unlock()
+}
+
+func (s *fakeState) setReadErr(err error) {
+	s.mu.Lock()
+	s.readErr = err
+	s.mu.Unlock()
+}
+
+func (s *fakeState) ReadPane(_ context.Context, paneID, _ string, lines int) ([]byte, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.readLines = lines
 	if s.readErr != nil {
 		return nil, s.readErr
 	}
