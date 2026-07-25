@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
-import { render, screen, waitFor } from "@testing-library/react";
+import { fireEvent, render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { MemoryRouter, Route, Routes } from "react-router-dom";
 import { RunRoute } from "./run";
@@ -140,7 +140,11 @@ describe("Run detail — instruction delivery", () => {
     const spy = vi.spyOn(store, "runMutation").mockResolvedValue({ request_id: "r", accepted: true, result: {} });
     mount();
     const field = await screen.findByLabelText(/instruction for claude/i);
-    await userEvent.type(field, "continue");
+    // One change event rather than eight keystrokes: per-keystroke typing through
+    // jsdom is the slowest path in the suite and scales with parallel worker
+    // load, which is what made these three cases nondeterministic. The delivery
+    // states under test do not depend on how the text arrived.
+    fireEvent.change(field, { target: { value: "continue" } });
     await userEvent.click(screen.getByRole("button", { name: /send instruction/i }));
 
     await waitFor(() => expect(spy).toHaveBeenCalled());
@@ -151,15 +155,18 @@ describe("Run detail — instruction delivery", () => {
   });
 
   it("keeps the draft and explains a stale-generation rejection", async () => {
-    vi.spyOn(store, "runMutation").mockResolvedValue({
+    const spy = vi.spyOn(store, "runMutation").mockResolvedValue({
       request_id: "r",
       error: { code: "generation_stale", message: "resource changed; refresh and retry", retryable: false },
     });
     mount();
     const field = await screen.findByLabelText(/instruction for claude/i);
-    await userEvent.type(field, "continue");
+    fireEvent.change(field, { target: { value: "continue" } });
     await userEvent.click(screen.getByRole("button", { name: /send instruction/i }));
 
+    // Await the dispatch before asserting on what it rendered, so the assertion
+    // is not racing the mutation it depends on.
+    await waitFor(() => expect(spy).toHaveBeenCalled());
     expect(await screen.findByText("Not sent")).toBeInTheDocument();
     expect(screen.getByText(/resource changed/i)).toBeInTheDocument();
     expect(field).toHaveValue("continue");
@@ -171,9 +178,10 @@ describe("Run detail — instruction delivery", () => {
       error: { code: "deadline_exceeded", message: "operation outcome uncertain", retryable: true },
     });
     mount();
-    await userEvent.type(await screen.findByLabelText(/instruction for claude/i), "deploy");
+    fireEvent.change(await screen.findByLabelText(/instruction for claude/i), { target: { value: "deploy" } });
     await userEvent.click(screen.getByRole("button", { name: /send instruction/i }));
 
+    await waitFor(() => expect(spy).toHaveBeenCalled());
     expect(await screen.findByText("Delivery unknown")).toBeInTheDocument();
     expect(screen.getByText(/may already have received this/i)).toBeInTheDocument();
     expect(screen.getByRole("button", { name: /send again/i })).toBeInTheDocument();
@@ -260,7 +268,11 @@ describe("Run detail — production run mode", () => {
     mountWithContract();
 
     const field = await screen.findByLabelText(/instruction for claude/i);
-    await userEvent.type(field, "continue");
+    // One change event rather than eight keystrokes: per-keystroke typing through
+    // jsdom is the slowest path in the suite and scales with parallel worker
+    // load, which is what made these three cases nondeterministic. The delivery
+    // states under test do not depend on how the text arrived.
+    fireEvent.change(field, { target: { value: "continue" } });
     await userEvent.click(screen.getByRole("button", { name: /send instruction/i }));
 
     await waitFor(() => expect(spy).toHaveBeenCalled());
