@@ -110,6 +110,15 @@ Verified absence of a conversation surface (`herdr api schema --json`, protocol
 - `session.snapshot` carries **no** top-level worktree array. The only worktree
   context in a snapshot is `WorkspaceInfo.worktree`
   (`repo_key`, `repo_name`, `repo_root`, `checkout_path`, `is_linked_worktree`).
+  Note what is absent: there is **no branch**. A branch (and a worktree's
+  prunable/detached state, and the full inventory including checkouts that are not
+  open) requires a separate `worktree.list` call, which the relay does not make —
+  so nothing on the wire or in the UI may present a branch name as fact. The
+  relay therefore does not model a top-level worktree array at all: a field for
+  one would decode empty forever and invite consumers to build on it.
+  `worktree.remove` takes the *workspace* a worktree is open in, and git refuses
+  to remove a repository's main checkout, so `is_linked_worktree` is exactly the
+  removable case and is what gates the destructive control.
 - `AgentInfo` additionally reports `launch_pending`, `title`, `state_labels`, and
   `tokens`. The first two are consumed; `state_labels` and `tokens` are
   agent-manifest-derived free text and are deliberately not yet on the wire.
@@ -536,7 +545,13 @@ foreground_cwd, worktree{repo_name, repo_root, checkout_path,
 is_linked_worktree}, revision, state_change_seq}`.
 
 - `run_id` is opaque. Operations are addressed by `pane_id` plus
-  `expected_generation`, never by parsing it.
+  `expected_generation`, never by parsing it. It binds the pane id, the pane
+  generation, **and** the occupant digest, because a generation alone is not
+  unique across pane recycling: a departed pane's generation entry is dropped, so
+  a pane id that reappears restarts at generation 1. Folding the incarnation in
+  means anything keyed on the id — a client-side run partition holding
+  instruction history, a list key — can never let a new occupant inherit a dead
+  run.
 - `agent_incarnation` is a digest of the pane's occupant identity (terminal id,
   agent kind, bound agent session). It is a digest, not the raw fingerprint,
   because the session reference may be a filesystem path. It changes exactly when
@@ -561,13 +576,21 @@ fresh-state check. The guard runs before any Herdr call.
 
 ```json
 {"type":"observed_terminal_output","source":"recent-unwrapped","format":"text",
- "lines":200,"bytes":1234,"truncated":false,"text":"..."}
+ "lines":17,"bytes":1234,"truncated":false,"text":"..."}
 ```
 
 It is terminal output Herdr rendered, labelled as such. It carries no role and
 must never be presented as an assistant message. A client must ignore unknown
 part types and must never interpret a part as a message unless its type says so.
 Adding a part type or a field does not bump `contract_version`.
+
+`lines` is how many lines `text` **actually contains** — not the bound that was
+requested. Clients render it as a statement of fact ("the last N lines this pane
+rendered"), so echoing the request back would make that a lie whenever the pane
+rendered fewer lines than were asked for. The `lines` query parameter is still
+clamped to `max_output_lines`, and that clamp is what the relay asks Herdr for;
+the two numbers are different things. `bytes` is the length of `text` after
+sanitization, and `truncated` reports that the byte bound dropped older output.
 
 Errors are stable and sanitized:
 

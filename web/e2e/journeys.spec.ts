@@ -63,8 +63,10 @@ test.describe("Run detail", () => {
     await openRun(page, "claude");
 
     const composer = page.getByLabel("Instruction for claude");
-    // The exact target is stated before anything is sent.
-    await expect(main(page).getByText("claude · space-api / auth-refactor")).toBeVisible();
+    // The exact target is stated before anything is sent: agent, workspace, and
+    // the checkout directory the work is happening in. Not a branch — a snapshot
+    // carries none, so naming one would be an invention (SPEC §3.1).
+    await expect(main(page).getByText("claude · space-api / space-api-auth")).toBeVisible();
     await composer.fill("continue with the reconnect fix");
     await page.getByRole("button", { name: "Send instruction" }).click();
 
@@ -236,9 +238,11 @@ test.describe("Structured run contract", () => {
     await pair(page);
     await expect.poll(() => requests.some((r) => r.startsWith("/api/v1/runs"))).toBe(true);
 
-    // The row addresses the run by the relay's authoritative id.
+    // The row addresses the run by the relay's authoritative id. It is opaque —
+    // the client never parses it — so this asserts the shape the relay publishes
+    // (pane, generation, and occupant digest) rather than a fixed digest value.
     const row = inbox(page).getByRole("link", { name: /\bclaude\b/ }).first();
-    await expect(row).toHaveAttribute("href", "/runs/w1%3Ap1%403");
+    await expect(row).toHaveAttribute("href", /^\/runs\/w1%3Ap1%403%23[0-9a-f]{16}$/);
     await openRun(page, "claude");
 
     // The detail read is guarded by the mandatory generation, and the legacy
@@ -417,6 +421,30 @@ test.describe("Console recovery", () => {
     // than attaching to a different incarnation.
     await expect(page.getByText(/this pane was replaced since you opened the link/i)).toBeVisible({ timeout: 20_000 });
   });
+
+  /**
+   * Review MEDIUM 2. A console that is already attached and then has its pane
+   * recycled must stop re-dialling a handshake the pre-upgrade generation guard
+   * will refuse forever, and must say which of the two things happened instead of
+   * sitting on "Reattaching…". The existing test above covers a stale generation
+   * on *first* attach only.
+   */
+  test("an attached console names a replacement instead of reattaching forever", async ({ page }) => {
+    await pair(page);
+    await page.goto("/console/w1%3Ap1?generation=3");
+    await expect(page.getByTestId("terminal-host")).toContainText("herdr", { timeout: 20_000 });
+
+    // Herdr recycles the pane underneath the live attach.
+    await replacePane(page, "w1:p1");
+
+    // The route keys the view on pane + generation, so it remounts on the new
+    // incarnation and reports the assertion it was opened with as stale. Either
+    // way the operator is told what happened — never left on a silent spinner.
+    await expect(
+      page.getByText(/this pane was replaced|no agent occupies the pane any more/i).first(),
+    ).toBeVisible({ timeout: 20_000 });
+    await expect(page.getByText(/reattaching/i)).toBeHidden();
+  });
 });
 
 test.describe("Start run", () => {
@@ -481,6 +509,47 @@ test.describe("Start run", () => {
     await expect(main(page).getByText("Created workspace flake-hunt")).toBeVisible();
     await page.getByRole("button", { name: /retry the failed step/i }).click();
     await expect(page.getByRole("heading", { level: 1, name: "Run started" })).toBeVisible({ timeout: 30_000 });
+  });
+
+  /**
+   * Review HIGH 1. A first instruction the relay could not confirm must never be
+   * swept into the generic failed-step retry: that path mints a fresh request_id,
+   * so the payload-bound idempotency cache cannot dedupe it, and the objective
+   * would reach the live shell twice through a UI that said the send failed.
+   */
+  test("an unconfirmed first instruction is never silently re-sent", async ({ page }) => {
+    await pair(page);
+    await goTo(page, "Start run");
+
+    await page.getByLabel("What should the agent do?").fill("Audit the reconnect path");
+    await page.getByRole("radio", { name: /an existing workspace/i }).click();
+    await page.getByLabel("Workspace").selectOption("w3");
+    await page.getByRole("radio", { name: "codex", exact: true }).click();
+    await page.getByLabel("Name it").fill("codex-uncertain");
+
+    // A retryable failure: the relay lost certainty after Herdr may have accepted.
+    await failNext(page, "agent.prompt", {
+      status: 504,
+      code: "deadline_exceeded",
+      message: "operation outcome uncertain",
+      retryable: true,
+    });
+    await page.getByRole("button", { name: "Start run" }).click();
+
+    await expect(page.getByRole("heading", { level: 1, name: /agent started, delivery unknown/i })).toBeVisible({
+      timeout: 30_000,
+    });
+    await expect(main(page).getByText(/may already have/i)).toBeVisible();
+    await expect(main(page).getByText(/check the console before sending it again/i)).toBeVisible();
+
+    // The generic retry is not on offer; only the deliberate, warned re-send is.
+    await expect(main(page).getByRole("button", { name: /retry the failed step/i })).toBeHidden();
+    await expect(main(page).getByRole("button", { name: /send the objective again/i })).toBeVisible();
+
+    // Partial success is preserved: the agent is live and reachable.
+    await expect(main(page).getByText(/Started codex as codex-uncertain/)).toBeVisible();
+    await main(page).getByRole("button", { name: /open the run/i }).click();
+    await expect(page.getByRole("heading", { level: 1, name: "codex-uncertain" })).toBeVisible();
   });
 
   test("a partly-composed launch survives leaving the route", async ({ page }) => {
