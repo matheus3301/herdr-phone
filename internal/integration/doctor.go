@@ -49,6 +49,12 @@ func (rt *Runtime) Doctor(ctx context.Context, cfg config.Config) (app.DoctorRep
 		add("cloudflared", true, path)
 	}
 
+	// Named mode's identity gate. Surfaced on every doctor run because named mode
+	// is Access-only: the allowlist is the last identity filter the origin applies.
+	if c, ok := accessIdentityGateCheck(cfg); ok {
+		checks = append(checks, c)
+	}
+
 	// Tunnel configuration resolvability for the configured mode.
 	tcfg := tunnelConfig(cfg, cfg.Cloudflare.Mode, cfg.Server.Port, "")
 	if err := tcfg.Validate(); err != nil {
@@ -74,4 +80,57 @@ func (rt *Runtime) Doctor(ctx context.Context, cfg config.Config) (app.DoctorRep
 	}
 
 	return app.DoctorReport{Checks: checks}, nil
+}
+
+// accessIdentityGateName labels the named-mode identity-gate check.
+const accessIdentityGateName = "Access identity allowlist"
+
+// accessIdentityGateCheck reports how tightly the origin filters identities in
+// named mode. It returns ok=false when the check does not apply (quick mode has
+// no edge identity, so the single-use pairing secret is its gate and an
+// allowlist would mean nothing there).
+//
+// An empty allowlist permitted by allow_any_identity is a legitimate but
+// wide-open configuration: since v0.3.0 dropped pairing as a second factor,
+// every identity the Cloudflare Access policy admits reaches a shell-equivalent
+// surface. It is reported as a passing check with a WARNING detail rather than a
+// failure, because the operator declared it deliberately and config validation
+// already refuses the same state when undeclared — a red doctor for a config the
+// operator explicitly chose would only teach them to ignore doctor. (app's
+// DoctorCheck has no warn severity, and this package does not own it.)
+//
+// The identities themselves are never printed: doctor output is copied into bug
+// reports and panes, and the count is all an operator needs to see.
+func accessIdentityGateCheck(cfg config.Config) (app.DoctorCheck, bool) {
+	if cfg.Cloudflare.Mode != config.ModeNamed {
+		return app.DoctorCheck{}, false
+	}
+	switch {
+	case cfg.Access.HasIdentityAllowlist():
+		return app.DoctorCheck{
+			Name: accessIdentityGateName,
+			OK:   true,
+			Detail: fmt.Sprintf("%d identity/identities allowed, matched exactly at the origin",
+				len(cfg.Access.AllowedIdentities)),
+		}, true
+	case cfg.Access.AllowAnyIdentity:
+		return app.DoctorCheck{
+			Name: accessIdentityGateName,
+			OK:   true,
+			Detail: "WARNING: allow_any_identity = true with an empty allowed_identities — " +
+				"every identity your Cloudflare Access policy admits gets a shell-equivalent " +
+				"session, and Access is the only gate (named mode needs no pairing). " +
+				"Set auth.access.allowed_identities to your own email unless the Access policy " +
+				"itself is the intended boundary",
+		}, true
+	default:
+		// Unreachable from the CLI (invalid configuration is rejected before doctor
+		// runs), so this only guards a caller that skipped validation.
+		return app.DoctorCheck{
+			Name: accessIdentityGateName,
+			OK:   false,
+			Detail: "empty auth.access.allowed_identities without auth.access.allow_any_identity — " +
+				"this configuration is invalid in named mode",
+		}, true
+	}
 }

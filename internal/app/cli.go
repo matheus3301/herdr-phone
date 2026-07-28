@@ -21,8 +21,9 @@ Usage:
   herdr-phone <command> [flags]
 
 Commands:
-  start [--quick] [--foreground]   Start the relay daemon and print a pairing URL
+  start [--quick] [--foreground]   Start the relay daemon and print the URL to open
   stop                             Gracefully stop the relay daemon
+  toggle                           Stop the relay if running, otherwise start it
   status [--json]                  Show relay status
   setup-link                       Rotate the pairing secret and print a new link
   doctor                           Validate config, Herdr, cloudflared, and state
@@ -75,6 +76,11 @@ func Main(env Environment) int {
 			return code
 		}
 		return runStop(env)
+	case ActionToggle:
+		if code, handled := requireNoArgs(env, cmd, rest); handled {
+			return code
+		}
+		return runToggle(env)
 	case ActionStatus:
 		return runStatus(env, rest)
 	case ActionSetupLink:

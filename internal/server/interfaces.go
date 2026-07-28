@@ -70,6 +70,20 @@ type Authenticator interface {
 	// Pair validates a single-use pairing secret (constant-time), rotates it,
 	// and creates a session. It returns ErrPairing on an invalid/used secret.
 	Pair(r *http.Request, secret string) (*Session, error)
+	// EnsureSession provisions the app session for a request that has already
+	// cleared Access verification but carries no valid session cookie.
+	//
+	// In named mode Cloudflare Access is the interactive gate (SPEC section 9.1):
+	// the JWT is re-validated at the origin on every request, so a request that
+	// reached this point carries a cryptographically verified edge identity. It
+	// mints - or reuses the live session already bound to that identity - and
+	// returns it with the cookie the caller must set on the response, exactly as
+	// Pair does. In quick mode there is no edge identity, so it returns
+	// (nil, nil) and single-use pairing stays the only way in.
+	//
+	// A non-nil error or a nil Session must leave the request unauthenticated:
+	// callers fail closed and never invent an identity of their own.
+	EnsureSession(r *http.Request) (*Session, error)
 	// Session resolves an opaque session-cookie value to its identity. The
 	// returned Identity must populate SessionID (the non-secret audit handle),
 	// and should populate CSRFToken and ExpiresAt so an authenticated

@@ -14,7 +14,13 @@ import (
 // accessHeader is the only header the origin trusts for edge identity.
 const accessHeader = "Cf-Access-Jwt-Assertion"
 
-var errNoAccessToken = errors.New("auth: missing Cf-Access-Jwt-Assertion header")
+var (
+	errNoAccessToken = errors.New("auth: missing Cf-Access-Jwt-Assertion header")
+	// errNoAccessIdentity fails an auto-provision closed when a verified token
+	// carries neither an email nor a common_name: an unattributable session
+	// could not be audited or reused, so pairing remains the only way in.
+	errNoAccessIdentity = errors.New("auth: access token carries no identity claim")
+)
 
 // authAdapter composes the auth package's pairing, session, CSRF, and Access
 // JWT primitives into the single server.Authenticator the relay expects. It also
@@ -92,6 +98,55 @@ func (a *authAdapter) Pair(r *http.Request, secret string) (*server.Session, err
 		Cookie:    auth.NewSessionCookie(sess.ID, sess.ExpiresAt),
 		CSRFToken: sess.CSRFToken,
 		Identity:  toServerIdentity(sess.AuditID, sess.CSRFToken, sess.ExpiresAt, id),
+		ExpiresAt: sess.ExpiresAt,
+	}, nil
+}
+
+// EnsureSession provisions the app session for a named-mode request that cleared
+// the origin-side Access check but presented no valid session cookie. Named mode
+// is Access-gated, so the verified edge identity is sufficient to hold a session
+// and no pairing round-trip is required. Quick mode has no edge identity and
+// returns (nil, nil) so single-use pairing stays the only way in.
+//
+// The Access claims are re-read here (rather than carried over from the
+// middleware's VerifyAccess) so the session is bound to the exact identity that
+// authorized this request and capped at that token's expiry. Any verification
+// error is returned and the caller fails the request closed.
+func (a *authAdapter) EnsureSession(r *http.Request) (*server.Session, error) {
+	if !a.named {
+		return nil, nil
+	}
+	claims, err := a.verifyToken(r)
+	if err != nil {
+		return nil, err
+	}
+	id := auth.Identity{Email: claims.Email, CommonName: claims.CommonName}
+	if auth.IdentitySubject(id) == "" {
+		return nil, errNoAccessIdentity
+	}
+	var hardExpiry time.Time
+	if claims.ExpiresAt > 0 {
+		hardExpiry = time.Unix(claims.ExpiresAt, 0)
+	}
+
+	// Reuse before create: a browser that keeps arriving without the cookie (or a
+	// second tab that lost it) must not accumulate one session per request. A
+	// reused session keeps its own expiry - already capped at the TTL and the
+	// Access expiry when it was created - and is handed back with a fresh cookie
+	// carrying exactly that expiry.
+	sess, ok := a.sessions.GetByIdentity(id)
+	if !ok {
+		sess, err = a.sessions.Create(id, hardExpiry)
+		if err != nil {
+			return nil, err
+		}
+	}
+	return &server.Session{
+		// As in Pair: the cookie carries the secret bearer id, while everything
+		// recorded or echoed uses the non-secret AuditID.
+		Cookie:    auth.NewSessionCookie(sess.ID, sess.ExpiresAt),
+		CSRFToken: sess.CSRFToken,
+		Identity:  toServerIdentity(sess.AuditID, sess.CSRFToken, sess.ExpiresAt, sess.Identity),
 		ExpiresAt: sess.ExpiresAt,
 	}, nil
 }

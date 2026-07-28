@@ -1,10 +1,10 @@
 # herdr-phone Product and Implementation Specification
 
-Status: implementation contract for v0.2.0
+Status: implementation contract for v0.3.0
 
 Repository: `https://github.com/matheus3301/herdr-phone`
 
-Date: 2026-07-23
+Date: 2026-07-28
 
 ## 1. Mission
 
@@ -18,8 +18,9 @@ The plugin is a Go 1.26 relay with an embedded React and TypeScript PWA. It star
 and supervises `cloudflared`, supports named and quick tunnels, binds its origin
 to loopback only, and never exposes Herdr's local socket directly to a browser.
 Named tunnels use Cloudflare Access as the edge identity layer and validate the
-Access JWT again at the origin. Quick tunnels require explicit opt-in and strong
-application-level pairing because they do not have Access protection by default.
+Access JWT again at the origin on every request, which is what lets Access alone
+be the interactive gate there. Quick tunnels require explicit opt-in and strong
+application-level pairing because they have no Access protection at all.
 
 The product is remote shell access by design. Its security bar is therefore the
 same as an SSH client, not a read-only dashboard.
@@ -28,15 +29,27 @@ same as an SSH client, not a read-only dashboard.
 
 - Product and plugin name: `herdr-phone` / **Herdr Phone**.
 - Plugin id: `matheus3301.phone`.
-- Version: `0.2.0`.
-- Host platform for v0.2.0: macOS, amd64 and arm64.
+- Version: `0.3.0`.
+- Host platform for v0.3.0: macOS, amd64 and arm64.
 - Backend: Go 1.26, pinned in both `go.mod` and `mise.toml`.
 - Frontend: React, TypeScript, Vite, Tailwind CSS v4, shadcn/ui primitives, and
   xterm.js, embedded into the Go binary.
 - Front doors: Cloudflare named tunnels and explicitly enabled Quick Tunnels.
 - Edge auth for named tunnels: Cloudflare Access.
-- App auth in all modes: one-time pairing link followed by an HttpOnly session.
-- Herdr scope: one configured/running Herdr session in v0.2.0. Named-session
+- **App auth in named mode: Access-only.** Cloudflare Access is the sole
+  interactive gate. A request that clears the origin's Access JWT verification and
+  carries no session cookie is transparently given an HttpOnly app session bound
+  to the verified Access identity; no pairing round-trip is required. This is safe
+  only because the JWT is re-validated at the origin on *every* request and
+  WebSocket handshake (section 9.2), not merely accepted once at the edge.
+- **App auth in quick mode: pairing is mandatory.** A quick tunnel has no edge
+  identity, so the single-use pairing link followed by an HttpOnly session remains
+  the only way in and is unchanged.
+- App sessions are in-memory in both modes, whether paired or auto-provisioned,
+  with identical lifetime rules. Persistent or on-disk sessions are a non-goal.
+- One-step start: `start` prints the URL to open on the phone, and a keybindable
+  `toggle` action turns the daemon on and off.
+- Herdr scope: one configured/running Herdr session in v0.3.0. Named-session
   aggregation is deliberately deferred to avoid surprising blast radius.
 - Remote controls: full safe parity for the operations listed in section 15.
 - Distribution: normal Herdr community plugin plus checksum-verified releases.
@@ -249,18 +262,21 @@ Reject:
 
 Manifest:
 
-- `id = "matheus3301.phone"`, name `Herdr Phone`, version `0.2.0`.
+- `id = "matheus3301.phone"`, name `Herdr Phone`, version `0.3.0`.
 - `min_herdr_version = "0.7.5"`, platforms `macos`.
 - Build command `sh scripts/build.sh`.
-- Global actions: `start`, `start-quick`, `stop`, `status`, `setup-link`, and
-  `doctor`.
-- No default keybinding and no long-running plugin pane.
+- Global actions: `start`, `start-quick`, `stop`, `toggle`, `status`,
+  `setup-link`, and `doctor`.
+- No default keybinding and no long-running plugin pane. `toggle` is the action
+  intended for the operator to bind via `[[keys.command]]` with
+  `type = "plugin_action"` and `command = "matheus3301.phone.toggle"`.
 
 CLI:
 
 ```text
 herdr-phone start [--quick] [--foreground]
 herdr-phone stop
+herdr-phone toggle
 herdr-phone status [--json]
 herdr-phone setup-link
 herdr-phone doctor
@@ -271,9 +287,21 @@ herdr-phone serve                 # internal foreground daemon entrypoint
 
 `start` must be idempotent. If the daemon is healthy, return its current mode and
 URL. If state is stale, reconcile via the control socket and process identity
-before replacing it. `stop` must request graceful shutdown through the private
-control socket, not kill an arbitrary PID. `setup-link` rotates a single-use
-pairing secret and prints both a URL and best-effort terminal QR code.
+before replacing it.
+
+`start` must end by printing the single URL to open on the phone. In named mode
+that is the bare public URL, because Access is the gate and no pairing secret is
+involved; in quick mode it is the single-use pairing URL, because pairing is the
+only gate. The `Public URL:` and `Pairing:` lines are retained in both modes.
+
+`toggle` stops the daemon when it is running and otherwise starts it in the
+configured mode, printing the resulting state and, on start, the same open URL. It
+reuses the status/start/stop paths rather than duplicating their logic.
+
+`stop` must request graceful shutdown through the private control socket, not kill
+an arbitrary PID. `setup-link` rotates a single-use pairing secret and prints both
+a URL and best-effort terminal QR code; it remains available in named mode as a
+re-bind/recovery path even though pairing is not required there.
 
 ## 7. Process Architecture and Lifecycle
 
@@ -283,7 +311,7 @@ Herdr plugin action
       -> validate config, Herdr, cloudflared, and state lock
       -> spawn detached herdr-phone serve
       -> wait for private readiness
-      -> print authenticated pairing URL
+      -> print the URL to open (named: public URL; quick: pairing URL)
 
 herdr-phone serve
   -> loopback HTTP server
@@ -309,7 +337,7 @@ The state directory contains only mode `0600` files and a mode `0600` Unix socke
 - Temporary tunnel-token file: `0600`, deleted immediately after cloudflared has
   read it and become ready.
 
-Do not automatically start at login in v0.2.0. Document an optional future
+Do not automatically start at login in v0.3.0. Document an optional future
 LaunchAgent, but do not generate one silently.
 
 ## 8. Configuration
@@ -379,22 +407,85 @@ Validation:
 
 ## 9. Authentication and Request Security
 
-### 9.1 Pairing
+### 9.1 App session establishment
 
-Every daemon instance creates a 256-bit random pairing secret. `setup-link`
-prints `https://host/#pair=<base64url-secret>`; fragments are not sent in HTTP
-requests. The SPA removes the fragment from history before calling `POST
-/api/v1/pair`.
+An app session is an opaque, random, HttpOnly, Secure, SameSite=Strict
+`__Host-herdr_phone` cookie. Session records live only in daemon memory and expire
+at the earlier of the configured TTL, the idle-lock period, and the verified Access
+JWT expiry. Each session carries a CSRF token the SPA keeps in memory, never
+localStorage. These rules are identical for every session regardless of how it was
+established — but in named mode the expiry of a session is not the end of access,
+because a new one is provisioned on the next request. See *Named-mode session
+lifetime is delegated to Cloudflare Access* below.
 
-The secret is single-use and constant-time compared. Success rotates it and sets
-an opaque, random, HttpOnly, Secure, SameSite=Strict `__Host-herdr_phone` cookie.
-Session records live only in daemon memory and expire at the earlier of the
-configured TTL and the verified Access JWT expiry. The pair endpoint returns a
-CSRF token retained in memory by the SPA, never localStorage.
+**Named mode: Access-only auto-provisioning.** Cloudflare Access is the
+interactive gate. A request on a session-authenticated route that clears the
+origin's Access JWT verification (section 9.2) but presents no valid session
+cookie must be given a session bound to the verified Access identity, and the
+cookie set on that same response. Requirements:
 
-Named mode requires a valid Access JWT before pairing and on every subsequent
-HTTP request and WebSocket handshake. Quick mode requires pairing but has no
-Access identity and displays `Quick Tunnel operator` in the audit UI.
+- The Access claims are re-read at provisioning time, so the session is bound to
+  the exact identity that authorized the request and its hard expiry is capped at
+  that token's `exp`. Any verification error fails the request closed; no session
+  is minted.
+- An identity carrying neither `email` nor `common_name` is not provisionable —
+  an unattributable session could be neither audited nor reused.
+- **Reuse before create.** A live session already bound to the same identity
+  subject (verified `email`, else `common_name`) is returned instead of a new one,
+  so repeated cookie-less requests cannot accumulate sessions. A reused session
+  keeps its existing expiry and is handed back with a fresh cookie carrying it.
+- Provisioning emits an audit event (`session.auto`) recording the subject and the
+  non-secret audit id — never the cookie value.
+- Every later middleware step applies unchanged (section 9.3). In particular a
+  brand-new session has not surfaced its CSRF token yet, so a mutating request
+  still fails CSRF until the SPA reads `GET /session` — exactly the rule a paired
+  session obeys before it learns its token.
+- Pairing is therefore not required in named mode. A daemon restart is invisible
+  to the operator: the next request re-provisions from the still-valid Access
+  identity.
+
+**Named-mode session lifetime is delegated to Cloudflare Access.** This is a
+deliberate, accepted consequence of auto-provisioning, and it must be documented
+rather than implied away: the same mechanism that makes a daemon restart invisible
+makes *every* app-side session ending invisible.
+
+- `server.idle_lock` does **not** re-lock a named-mode session. An idle-expired
+  session is dropped from the store, and the next request is simply given a new one
+  from the unexpired Access identity. No re-authentication is prompted.
+- `DELETE /session` (in-app "End session" / logout) does **not** end named-mode
+  access. It revokes that session record and clears the cookie, but the next
+  request auto-provisions again. It is a device-local cookie clear, not a
+  revocation.
+- `server.session_ttl` caps the absolute lifetime of a *single* session, not of
+  access. A re-provisioned session starts a fresh TTL, still capped at the Access
+  token's `exp`.
+- What therefore bounds named-mode access is Cloudflare Access alone: the Access
+  session duration configured in Zero Trust, an Access-session revocation, a policy
+  or `allowed_identities` change that stops matching the identity, or stopping the
+  daemon (which drops all in-memory sessions and tears down the tunnel).
+- **Quick mode is unaffected:** `idle_lock`, `session_ttl`, and logout all fully
+  apply there, because nothing re-provisions a session without the single-use
+  pairing secret.
+
+The UI and the docs must not present `idle_lock` or logout to a named-mode operator
+as a security boundary; the honest controls are Access-side revocation and `stop`.
+Giving app-side revocation real teeth in named mode (for example, refusing to
+auto-provision for an identity that just logged out) would be a deliberate behavior
+change to specify here first — it is not the current contract, and it must not be
+assumed by anything that relies on this section.
+
+**Quick mode: pairing is mandatory and unchanged.** A quick tunnel has no edge
+identity, so no session is ever auto-provisioned there and a cookie-less request
+is rejected. Every daemon instance creates a 256-bit random pairing secret;
+`setup-link` prints `https://host/#pair=<base64url-secret>`, and fragments are not
+sent in HTTP requests. The SPA removes the fragment from history before calling
+`POST /api/v1/pair`. The secret is single-use and constant-time compared; success
+rotates it and sets the session cookie. Quick mode has no Access identity and
+displays `Quick Tunnel operator` in the audit UI.
+
+`POST /pair` stays live in named mode as a re-bind/recovery path, and named mode
+still requires a valid Access JWT before pairing and on every subsequent HTTP
+request and WebSocket handshake. Pairing is never a way around Access.
 
 ### 9.2 Access JWT
 
@@ -416,10 +507,25 @@ Enforce, in order:
 
 1. Host allowlist: exact public host or explicit loopback development host.
 2. Access JWT in named mode.
-3. App session cookie, except `/pair`.
+3. App session cookie, except `/pair`. In **named mode** a missing or invalid
+   session cookie is not a rejection: step 2 has already re-validated the Access
+   JWT at the origin, so the session is auto-provisioned from that verified
+   identity (section 9.1), its cookie is set on the response, and the request
+   continues with the new session's identity and CSRF token. This is why an
+   expired, idle-locked, or logged-out session does not end named-mode access —
+   "invalid cookie" and "no cookie" are the same case here, and both re-provision
+   while the Access identity holds. Anything other than a usable session — a
+   verification error, a nil session, an empty cookie — leaves the request
+   unauthenticated and it is rejected. In **quick mode** this step is unchanged: no
+   session means `401`, `/pair` is the only way in, and an expired, idle-locked, or
+   logged-out session genuinely locks the operator out until they pair again.
 4. Exact Origin allowlist on every WebSocket and every mutating HTTP request.
 5. Go `http.CrossOriginProtection` plus CSRF custom header/token.
 6. Method and content-type allowlist, bounded bodies, rate limits, and deadlines.
+
+Steps 4 through 6 apply identically to an auto-provisioned session and a paired
+one. Auto-provisioning grants no exemption from Origin, `CrossOriginProtection`,
+CSRF, rate limiting, or deadlines.
 
 Set CSP, `X-Content-Type-Options: nosniff`, `Referrer-Policy: no-referrer`,
 `X-Frame-Options: DENY`, `Permissions-Policy`, and no-store on API responses. CSP
@@ -742,7 +848,7 @@ same terminal and control shelf. Do not create a separate desktop product.
   tri-state modifier cycle: off, next key, locked.
 - Blocked agents lead the Herd view; working agents follow; quiet agents collapse.
 - Opening an agent shows the terminal before any response controls. Do not offer
-  blind one-tap approvals from push notifications in v0.2.0.
+  blind one-tap approvals from push notifications in v0.3.0.
 - Structural destructive actions use shadcn AlertDialog and a server confirmation
   nonce. Terminal danger-pattern warnings are advisory and require a second tap,
   but never pretend to sandbox an authorized shell.
@@ -791,7 +897,21 @@ Explicitly excluded from the browser:
 
 ## 16. Frontend Architecture
 
-- React routes: terminal, herd, spaces, settings/about, pairing, and offline.
+- React routes: terminal, herd, spaces, settings/about, pairing, reconnect, and
+  offline.
+- The SPA must not demand a pairing secret in named mode. It reads the mode the
+  relay states on the wire — `identity.mode` on `GET /session` and `POST /pair`,
+  the daemon `mode` on `GET /capabilities` — treating only the exact string
+  `"named"` as named mode so an absent or unrecognized value fails closed to the
+  mode that still requires a secret. In named mode `GET /session` succeeds on a
+  cold load with no prior pairing, so the existing recovery path is the whole
+  flow. When it fails, the SPA shows the Access reconnect state (whose remedy is a
+  top-level reload, the only thing that can obtain a fresh Access identity), not a
+  pairing form. Pairing stays reachable as an escape hatch, and is the fallback
+  when the SPA has never observed this relay's mode — withholding it from a
+  quick-mode operator would lock them out.
+- The last observed mode may be cached in browser storage: it is not a credential.
+  The session cookie, the CSRF token, and a pairing secret must never be.
 - One typed API module generated or checked from a shared JSON/TypeScript schema.
 - `useSyncExternalStore` for connection and snapshot state; no heavy data library.
 - WebSocket state updates with ETag HTTP fallback. Never trust `navigator.onLine`.
@@ -841,6 +961,12 @@ Required Go coverage:
   rotation, stale-cache bounds, and failure closure.
 - Pairing single use, rotation, session expiry, cookie attributes, CSRF, Host,
   Origin, CrossOriginProtection, rate limits, and route-wide middleware coverage.
+- Named-mode auto-provisioning: a cookie-less request with a valid Access JWT
+  succeeds and sets a `__Host-` cookie that the next request reuses; repeated
+  cookie-less requests for one identity reuse a single session rather than growing
+  the store; an invalid or expired JWT still yields `401` with no session minted;
+  quick mode never auto-provisions and still requires `/pair`; and the
+  `session.auto` audit record carries only the non-secret audit id.
 - Herdr NDJSON fragmentation, UTF-8 chunk boundaries, timeout cleanup, result type,
   snapshot decoding, event reconnect, protocol mismatch, and every required
   mutation argv/params.
@@ -896,7 +1022,7 @@ statement coverage and enforce a reasonable initial compressed frontend budget.
 - Never auto-install cloudflared. `doctor` gives exact Homebrew/manual guidance.
 - GoReleaser publishes darwin amd64/arm64 archives, checksums, and SBOM.
 - CI runs macOS and Linux compile/test where portable, but the manifest advertises
-  only macOS for v0.2.0.
+  only macOS for v0.3.0.
 - Workflows use least privileges, lockfile installs, immutable version agreement,
   no secret-requiring tests, and no commit mutation.
 - Release tags are annotated or signed, match manifest and binary version, and
@@ -924,15 +1050,24 @@ make clean
 ## 20. Documentation Requirements
 
 README must include install, Cloudflare Access and named tunnel setup, Quick Tunnel
-risk/opt-in, macOS Keychain token command, config reference, start/stop/status,
-pairing/QR, PWA install on iOS/Android, feature guide, security model, architecture,
-troubleshooting, development, and release instructions.
+risk/opt-in, macOS Keychain token command, config reference, start/stop/status/toggle,
+how sign-in differs by mode (Access-only in named, mandatory pairing in quick), PWA
+install on iOS/Android, feature guide, security model, architecture, troubleshooting,
+development, and release instructions.
+
+`docs/install.md` must be a self-contained, imperative guide a coding agent can
+execute end to end: prerequisite verification commands, the plugin install command,
+a minimal named-mode config with placeholders and exactly one credential strategy,
+Keychain token storage that never echoes the token, start plus how to read the
+printed access URL, the optional `toggle` keybinding, and a troubleshooting table.
 
 SECURITY.md must explicitly say the tool grants remote shell-equivalent access,
-list supported versions, explain private reporting, document Access JWT and
-pairing defenses, and provide immediate tunnel-token/session revocation steps.
+list supported versions, explain private reporting, document the Access JWT and
+per-mode app-session defenses (including auto-provisioned sessions' in-memory,
+Access-expiry-capped lifetime), and provide immediate tunnel-token/session
+revocation steps.
 
-## 21. Non-Goals for v0.2.0
+## 21. Non-Goals for v0.3.0
 
 - Windows host support, native iOS/Android apps, APNs, or background push actions.
 - Multi-user collaboration or simultaneous terminal controllers.
@@ -940,6 +1075,8 @@ pairing defenses, and provide immediate tunnel-token/session revocation steps.
 - Automatic cloudflared installation or self-update.
 - Starting at login or surviving a full host reboot without user configuration.
 - Multi-session Herdr aggregation.
+- Persistent or on-disk app sessions; sessions stay in daemon memory.
+- Dropping or weakening pairing in quick mode.
 - Parsing agent-specific approval screens into native controls.
 - File browsing beyond directory selection, file upload, clipboard image transfer,
   or arbitrary downloads.
@@ -957,8 +1094,11 @@ Implementation is complete only when:
 - A fake-cloudflared end-to-end test covers named and quick startup/teardown.
 - A local Herdr smoke proves snapshot, events, terminal controller, input, resize,
   create workspace/tab, split, agent prompt, confirmed close, and reconnect.
-- Named mode rejects missing/invalid Access configuration and verifies JWTs.
-- Quick mode cannot start without explicit config opt-in and mandatory pairing.
+- Named mode rejects missing/invalid Access configuration and verifies JWTs, and
+  reaches an authenticated session from a valid Access identity alone, with no
+  pairing step.
+- Quick mode cannot start without explicit config opt-in and mandatory pairing,
+  and never auto-provisions a session.
 - No secret appears in argv, logs, state, browser storage, test snapshots, or git.
 - The UI is usable at 390 px width with a software keyboard open and has passed
   screenshot review, keyboard accessibility, and reduced-motion checks.

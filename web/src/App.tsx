@@ -3,11 +3,29 @@ import { RouterProvider } from "react-router-dom";
 import * as api from "@/lib/api";
 import { store } from "@/lib/store";
 import { applyTheme, prefsStore } from "@/lib/prefs";
+import { gateAfterSessionFailure, relayModeFromRejection } from "@/lib/relay-mode";
 import { PairingScreen } from "@/routes/pairing";
+import { ReauthScreen } from "@/routes/reauth";
 import { BootSplash } from "@/components/boot-splash";
 import { router } from "@/router";
 
-type Phase = "booting" | "unpaired" | "pairing" | "paired" | "error";
+/**
+ * `unpaired` shows the pairing form (quick mode's only gate); `reauth` shows the
+ * named-mode reconnect screen, where the remedy is renewing Cloudflare Access, not
+ * pasting a pairing secret (DELIVERY-v0.3.0 §7).
+ */
+type Phase = "booting" | "unpaired" | "reauth" | "pairing" | "paired" | "error";
+
+/**
+ * Where a failed pairing attempt lands. A secret the relay rejected is the
+ * operator's to fix on the pairing form; an attempt the *origin* refused because
+ * Access is no longer valid has the same remedy as a failed boot — renew the edge
+ * identity — so only the relay's own Access rejection sends them there, never a
+ * remembered mode (which would hide a genuine pairing error).
+ */
+function phaseForPairFailure(err: unknown): Phase {
+  return relayModeFromRejection(err) === "named" ? "reauth" : "unpaired";
+}
 
 /** Extract and consume a `#pair=<secret>` fragment without leaving it in history. */
 function consumePairFragment(): string | null {
@@ -50,20 +68,31 @@ export function App() {
         } catch (err) {
           if (cancelled) return;
           setError(err instanceof api.ApiError ? err.message : "Pairing failed");
-          setPhase("unpaired");
+          setPhase(phaseForPairFailure(err));
         }
         return;
       }
-      // No fragment: do we already have a session cookie? GET /session confirms
-      // it and now returns the CSRF token + expiry, so a cold reload recovers a
-      // fully mutable session (store.start fetches and applies it).
+      // No fragment: can this device hold a session? GET /session returns the CSRF
+      // token + expiry, so a cold reload recovers a fully mutable session
+      // (store.start fetches and applies it). In named mode the relay provisions
+      // that session from the Access identity it re-validated at the origin, so
+      // this succeeds with no pairing at all (SPEC §9.1) — which is exactly why
+      // the pairing form below is quick mode's gate only.
       try {
         await api.getSession();
         if (cancelled) return;
         await store.start();
         if (!cancelled) setPhase("paired");
-      } catch {
-        if (!cancelled) setPhase("unpaired");
+      } catch (err) {
+        if (cancelled) return;
+        // Pairing is not the remedy in named mode: the gate is Cloudflare Access,
+        // so the operator has to re-clear the edge, not paste a secret.
+        if (gateAfterSessionFailure(err) === "named") {
+          setError(err instanceof api.ApiError ? err.message : null);
+          setPhase("reauth");
+        } else {
+          setPhase("unpaired");
+        }
       }
     }
     void boot();
@@ -82,12 +111,24 @@ export function App() {
       setPhase("paired");
     } catch (err) {
       setError(err instanceof api.ApiError ? err.message : "Pairing failed");
-      setPhase("unpaired");
+      setPhase(phaseForPairFailure(err));
     }
   };
 
   if (phase === "booting" || phase === "pairing") {
     return <BootSplash label={phase === "pairing" ? "Pairing…" : "Connecting to the relay…"} />;
+  }
+  if (phase === "reauth") {
+    return (
+      <ReauthScreen
+        error={error}
+        onReload={() => window.location.reload()}
+        onUsePairing={() => {
+          setError(null);
+          setPhase("unpaired");
+        }}
+      />
+    );
   }
   if (phase === "unpaired" || phase === "error") {
     return <PairingScreen onPair={pairManually} error={error} />;

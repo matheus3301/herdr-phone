@@ -272,6 +272,14 @@ func (v *Verifier) Verify(ctx context.Context, token string) (*Claims, error) {
 		ExpiresAt:  raw.Exp,
 	}
 
+	// The allowlist is enforced exactly and fails closed whenever one is
+	// configured. An empty set accepts any Access-authenticated identity, which is
+	// why named mode is only allowed to reach that state through an explicit
+	// auth.access.allow_any_identity opt-out (see config.Access.validateIdentityGate)
+	// - since named mode became Access-only, this is the last identity filter the
+	// origin applies. NewVerifier drops blank entries, so a whitespace-only entry
+	// never counts as an allowlist here either. Do not relax this to "skip when
+	// unset" in any other way.
 	if len(v.allowed) > 0 {
 		identity := claims.Identity()
 		if identity == "" {

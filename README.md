@@ -25,9 +25,14 @@ on every request. Quick Tunnels require explicit opt-in.
 > Herdr Phone puts an interactive terminal for your Mac on the public internet.
 > Anyone who reaches the front door and clears its authentication can run
 > arbitrary commands as your user — the same power as an SSH session. Its
-> security bar is that of an SSH client, not a read-only dashboard. Treat the
-> public URL, your Cloudflare Access identity, and the pairing link like a root
-> login. Read [SECURITY.md](SECURITY.md) before you expose it.
+> security bar is that of an SSH client, not a read-only dashboard. In named
+> mode, clearing Cloudflare Access **is** clearing the front door, so treat the
+> public URL and your Cloudflare Access identity — and, in quick mode, the
+> pairing link — like a root login. In named mode your Cloudflare Access session
+> duration is also the only thing that times you out: neither `idle_lock` nor the
+> in-app **End session** button ends access there
+> ([details](#session-lifetime-in-named-mode)). Read [SECURITY.md](SECURITY.md)
+> before you expose it.
 
 ## Contents
 
@@ -35,6 +40,8 @@ on every request. Quick Tunnels require explicit opt-in.
 - [How it works](#how-it-works)
 - [Prerequisites](#prerequisites)
 - [Install](#install)
+  - [Install with an agent](#install-with-an-agent)
+- [Verifying a downloaded release](#verifying-a-downloaded-release)
 - [Choosing a front door](#choosing-a-front-door)
   - [Named tunnel with Cloudflare Access (recommended)](#named-tunnel-with-cloudflare-access-recommended)
   - [Origin JWT configuration](#origin-jwt-configuration)
@@ -42,7 +49,8 @@ on every request. Quick Tunnels require explicit opt-in.
 - [Providing the tunnel token](#providing-the-tunnel-token)
 - [Configuration](#configuration)
 - [Running: start, stop, status](#running-start-stop-status)
-- [Pairing and QR](#pairing-and-qr)
+- [Signing in: Access and pairing](#signing-in-access-and-pairing)
+  - [Session lifetime in named mode](#session-lifetime-in-named-mode)
 - [Installing the PWA on your phone](#installing-the-pwa-on-your-phone)
 - [Feature guide](#feature-guide)
 - [Security model](#security-model)
@@ -50,7 +58,7 @@ on every request. Quick Tunnels require explicit opt-in.
 - [Development](#development)
 - [Releasing](#releasing)
 - [Troubleshooting](#troubleshooting)
-- [Non-goals (v0.2.0)](#non-goals-v020)
+- [Non-goals (v0.3.0)](#non-goals-v030)
 - [Contributing](#contributing)
 - [License](#license)
 
@@ -77,12 +85,15 @@ on every request. Quick Tunnels require explicit opt-in.
 - **Safe structural controls.** Create, rename, move, resize, zoom, split, swap,
   and confirmed-close, each with an explicit, single-use server confirmation for
   destructive actions.
-- **Secure by default.** Loopback-only origin, mandatory pairing in every mode,
-  Cloudflare Access with origin-side JWT validation for named tunnels, strict
-  Origin/CSRF/CSP, and terminal escape-sequence filtering.
+- **One-step start.** `start` prints the single URL to open on your phone, and a
+  keybindable `toggle` action turns the relay on and off without a terminal.
+- **Secure by default.** Loopback-only origin; Cloudflare Access as the gate for
+  named tunnels, with the origin re-validating the JWT on every request and
+  reconnect; mandatory single-use pairing in quick mode, which has no edge
+  identity; strict Origin/CSRF/CSP; and terminal escape-sequence filtering.
 - **Self-contained.** One static binary with the PWA embedded — no runtime CDN,
   no analytics, no telemetry, no hidden network access.
-- **macOS, amd64 and arm64** for v0.2.0.
+- **macOS, amd64 and arm64** for v0.3.0.
 
 ## How it works
 
@@ -111,7 +122,7 @@ process and tears them down on exit; killing the daemon tears down the tunnel.
 
 ## Prerequisites
 
-- **macOS** (Apple silicon or Intel). v0.2.0 is macOS-only.
+- **macOS** (Apple silicon or Intel). v0.3.0 is macOS-only.
 - [**Herdr**](https://herdr.dev) **v0.7.5+** with a working `plugin` command
   (verify with `herdr plugin`).
 - [**cloudflared**](https://github.com/cloudflare/cloudflared). It is **never**
@@ -140,9 +151,25 @@ linking it into one static binary — and otherwise downloads and **verifies the
 SHA-256 checksum** of the macOS release archive for your architecture. It never
 runs `curl | sh` and never installs `cloudflared`.
 
-The plugin registers global actions (`start`, `start-quick`, `stop`, `status`,
-`setup-link`, `doctor`) and installs **no** default keybinding and **no**
-long-running pane.
+The plugin registers global actions (`start`, `start-quick`, `stop`, `toggle`,
+`status`, `setup-link`, `doctor`) and installs **no** default keybinding and
+**no** long-running pane.
+
+### Install with an agent
+
+[`docs/install.md`](docs/install.md) is a self-contained, imperative guide written
+for a coding agent: prerequisite checks, the install command, a minimal named-mode
+config with placeholders, Keychain token storage, start, and a troubleshooting
+table. Hand it to your agent as-is, or fetch it yourself:
+
+```sh
+curl -fsSL https://raw.githubusercontent.com/matheus3301/herdr-phone/main/docs/install.md
+```
+
+You still create the Cloudflare tunnel and Access application yourself — the
+plugin never provisions anything in your Cloudflare account, and the guide tells
+the agent which four values (hostname, team domain, AUD tag, tunnel token) to ask
+you for.
 
 ## Verifying a downloaded release
 
@@ -164,7 +191,7 @@ a signed build-provenance attestation.
   this repository's release workflow, not swapped after the fact:
 
   ```sh
-  gh attestation verify herdr-phone_0.2.0_darwin_arm64.tar.gz \
+  gh attestation verify herdr-phone_0.3.0_darwin_arm64.tar.gz \
     --repo matheus3301/herdr-phone
   ```
 
@@ -183,7 +210,8 @@ local testing and are off unless you explicitly enable them.
 | Edge identity | Cloudflare Access (deny-by-default) | **None** |
 | Hostname | Stable, yours | Random `*.trycloudflare.com`, changes each run |
 | Uptime | Production-grade | **No SLA; testing only** |
-| App pairing | Required | Required |
+| App pairing | Not required — Access is the gate | **Required** (single-use link) |
+| Origin JWT re-validation | Every request and WebSocket handshake | n/a (no Access) |
 | Default | ✅ enabled | ❌ off; explicit opt-in |
 
 ### Named tunnel with Cloudflare Access (recommended)
@@ -239,14 +267,18 @@ the Cloudflare dashboard, then point Herdr Phone at them.
    ```
 
    The daemon validates the config, starts `cloudflared`, waits for readiness,
-   and prints an authenticated pairing URL.
+   and prints the URL to open on your phone. In named mode that is the bare
+   public URL: sign in through Cloudflare Access and you are in — no pairing
+   link is needed.
 
 ### Origin JWT configuration
 
 Cloudflare Access is an **edge** control. Herdr Phone does not trust it blindly:
 in named mode the origin cryptographically validates the Access JWT on **every**
 HTTP request and WebSocket handshake, so a request that somehow reaches loopback
-directly is still rejected without a valid token.
+directly is still rejected without a valid token. That origin-side re-validation
+is precisely why named mode can treat Access as the gate and skip pairing:
+authorization is re-proven per request, not accepted once at sign-in.
 
 Set these under `[auth.access]`:
 
@@ -270,9 +302,9 @@ convenience `Cf-Access-Authenticated-User-Email` header.
 A Quick Tunnel (`cloudflared tunnel --url http://127.0.0.1:PORT`) needs no
 Cloudflare account and prints a random `*.trycloudflare.com` hostname. **It has
 no Cloudflare Access identity at the edge**, no uptime guarantee, and is intended
-by Cloudflare for testing and development only. Herdr Phone still requires app
-pairing for a Quick Tunnel, but pairing is the *only* barrier — there is no edge
-identity in front of it.
+by Cloudflare for testing and development only. Herdr Phone therefore keeps app
+pairing **mandatory** for a Quick Tunnel, but pairing is the *only* barrier —
+there is no edge identity in front of it.
 
 Because of that, Quick Tunnels are **off by default**. To use one for local
 testing you must both set `quick_enabled = true` in config and start with the
@@ -362,8 +394,8 @@ error); a shell is never executed. See
 [server]
 host = "127.0.0.1"           # must be exactly 127.0.0.1 in production
 port = 8787                  # 1–65535 and must be free
-session_ttl = "12h"
-idle_lock = "30m"
+session_ttl = "12h"          # caps one session; in named mode a new one is provisioned after
+idle_lock = "30m"            # quick mode only — does not re-lock a named-mode session
 allowed_workspace_roots = ["~"]
 
 [cloudflare]
@@ -404,6 +436,12 @@ Validation highlights:
   command).
 - **Quick mode** requires `quick_enabled = true`, ignores Access configuration,
   and still requires pairing.
+- **`session_ttl` and `idle_lock` bound a session, and in named mode a session is
+  not the same thing as access.** When either elapses, the next request is simply
+  given a new session from your still-valid Cloudflare Access identity. They are
+  real limits in quick mode; in named mode the limit that matters is the Access
+  session duration you set in Cloudflare — see
+  [Session lifetime in named mode](#session-lifetime-in-named-mode).
 - Durations are positive and bounded; `poll_hot` is at least 250 ms.
 - Allowed workspace roots must exist and must not escape via symlink.
 
@@ -412,6 +450,7 @@ Validation highlights:
 ```text
 herdr-phone start [--quick] [--foreground]   # start (and supervise) the daemon
 herdr-phone stop                             # graceful shutdown via the control socket
+herdr-phone toggle                           # stop if running, otherwise start
 herdr-phone status [--json]                  # mode, URL, and health
 herdr-phone setup-link                       # rotate the pairing secret; print URL + QR
 herdr-phone doctor                           # diagnose config, Herdr, and cloudflared
@@ -429,47 +468,119 @@ herdr plugin log list --plugin matheus3301.phone
 ```
 
 - **`start`** validates config, Herdr, `cloudflared`, and the state lock; spawns
-  a detached `herdr-phone serve`; waits for private readiness; and prints an
-  authenticated pairing URL. It is **idempotent** — if the daemon is already
+  a detached `herdr-phone serve`; waits for private readiness; and prints the one
+  URL to open on your phone. It is **idempotent** — if the daemon is already
   healthy it returns the current mode and URL, reconciling stale state via the
   control socket and process identity before replacing it.
+
+  ```text
+  herdr-phone started in named mode.
+  Public URL: https://herdr.example.com
+  Pairing:    https://herdr.example.com/#pair=<base64url-secret>
+
+  Open on your phone: https://herdr.example.com
+  Cloudflare Access signs you in; no pairing link is needed.
+  ```
+
+  In **named mode** the open target is the bare public URL. In **quick mode** it
+  is the single-use pairing link, because pairing is the only gate there. The
+  `Public URL:` and `Pairing:` lines are still printed in both modes.
 - **`stop`** requests graceful shutdown through the private control socket (it
   does not kill an arbitrary PID). New requests stop, WebSockets close, terminal
   controllers are released, `cloudflared` is asked to terminate within the grace
   period, and remaining process groups are killed.
+- **`toggle`** stops the relay when it is running and starts it in the configured
+  mode when it is not, printing the resulting state (and, on start, the same open
+  URL). It is the action to bind to a key — see below.
 - **`status`** reports current mode, public URL, and the readiness of HTTP,
   Herdr, the tunnel, and the state engine to an authenticated caller or local
   status. `--json` emits machine-readable output.
 - **`doctor`** checks configuration and connectivity and prints exact
   Homebrew/manual guidance if `cloudflared` is missing. It never prints secrets.
 
-The daemon does **not** start at login in v0.2.0 (an optional LaunchAgent is
+### Binding a key to toggle it
+
+`matheus3301.phone.toggle` is a global plugin action with no default keybinding.
+Bind it in your Herdr keymap to turn the relay on and off without typing a
+command:
+
+```toml
+[[keys.command]]
+key = "prefix+p"
+type = "plugin_action"
+command = "matheus3301.phone.toggle"
+```
+
+The daemon does **not** start at login in v0.3.0 (an optional LaunchAgent is
 documented as future work but never generated silently).
 
-## Pairing and QR
+## Signing in: Access and pairing
 
-Every daemon instance creates a fresh 256-bit single-use pairing secret.
-`setup-link` prints both a URL and a best-effort terminal QR code:
+How you get in depends on the front door, because the two modes have different
+identity guarantees.
+
+**Named mode — Cloudflare Access only.** Open the public URL on your phone and
+sign in to Cloudflare Access as an allowed identity. That is all: the relay
+provisions an app session from the verified Access identity and sets an HttpOnly,
+Secure, `SameSite=Strict` `__Host-` session cookie. **No pairing link and no
+`#pair=` fragment is involved.** The Access JWT is still re-validated at the
+origin on every subsequent request and WebSocket handshake, and the session lives
+only in daemon memory, expiring at the earlier of `session_ttl` and the Access
+JWT's own expiry. Restarting the daemon simply causes the next request to
+provision again, so restarts need no action from you.
+
+**Quick mode — the pairing link is mandatory.** A Quick Tunnel has no edge
+identity, so the single-use pairing secret is the only gate. Every daemon
+instance mints a fresh 256-bit secret, and `start` (or `setup-link`) prints both a
+URL and a best-effort terminal QR code:
 
 ```text
-https://herdr.example.com/#pair=<base64url-secret>
+https://<random>.trycloudflare.com/#pair=<base64url-secret>
 ```
 
 The secret rides in the URL **fragment** (`#pair=…`), which browsers never send
-in an HTTP request. Open the link on your phone (scan the QR); the app removes the
-fragment from history and exchanges it for an HttpOnly, Secure, `SameSite=Strict`
-`__Host-` session cookie. The secret is single-use and rotates on success.
+in an HTTP request. Open the link on your phone (or scan the QR); the app removes
+the fragment from history and exchanges it for the session cookie. The secret is
+single-use and rotates on success — run `herdr-phone setup-link` for a fresh one.
 
-In **named mode** you must first pass Cloudflare Access (sign in as an allowed
-identity); pairing then binds the session, and the Access JWT is re-validated on
-every subsequent request and reconnect. In **quick mode** pairing is the only
-gate. To hand out a fresh link at any time, run `herdr-phone setup-link` again.
+`setup-link` and `POST /pair` stay live in named mode as a re-bind and recovery
+path, but you do not need them there — and a pairing link is never a way *around*
+Access, since a named-mode request without a valid Access JWT is rejected before
+pairing is even considered.
+
+### Session lifetime in named mode
+
+> **In named mode, Cloudflare Access is the only thing that ends your session.**
+> `server.idle_lock` does not re-lock it, and the in-app **End session** button does
+> not end access: the relay transparently provisions a new session from your
+> still-valid Access identity on the very next request. Access continues until the
+> Access session expires in Cloudflare, you revoke it, or you stop the daemon.
+
+This is the deliberate trade this mode makes — the pairing second factor is gone,
+so nothing app-side is holding a lock. Concretely, in named mode:
+
+| Control | Effect in named mode |
+| --- | --- |
+| `server.idle_lock` | **No effect on access.** The idle session is dropped and immediately re-provisioned. |
+| `server.session_ttl` | Caps one session, not access. The replacement starts a fresh TTL, capped at the Access token's expiry. |
+| **End session** / `DELETE /session` | Clears this device's cookie. The next request re-provisions. |
+| Access session duration (Zero Trust) | **The real limit.** Set it deliberately — it is your idle timeout. |
+| Revoke Access session, or drop the identity from the policy / `allowed_identities` | **Real revocation**, effective once the current token expires. |
+| `herdr-phone stop` | **Immediate.** Drops every in-memory session and tears down the tunnel. |
+
+So configure the Access application's session duration in Cloudflare Zero Trust to
+something you would accept as an unattended-terminal window, and treat
+`herdr-phone stop` as the real "lock the door" action.
+
+In **quick mode** all of this behaves as you would expect: `idle_lock`,
+`session_ttl`, and **End session** each genuinely end access, because without the
+single-use pairing secret nothing can re-establish a session.
 
 ## Installing the PWA on your phone
 
 Herdr Phone is a Progressive Web App: `display: standalone`, maskable icons, and
-`viewport-fit=cover`. After pairing, add it to your home screen for a full-screen,
-app-like experience.
+`viewport-fit=cover`. Once you are signed in, add it to your home screen for a
+full-screen, app-like experience.
 
 - **iOS (Safari):** tap **Share** → **Add to Home Screen**.
 - **Android (Chrome):** tap the **⋮** menu → **Install app** (or **Add to Home
@@ -525,9 +636,15 @@ and fail closed. In brief:
 - **Loopback-only origin**, reached from the internet only through an
   outbound-only Cloudflare Tunnel. Never bound to a LAN address in production.
 - **Cloudflare Access** in front of named tunnels, with the origin
-  **re-validating the Access JWT** on every request and reconnect.
-- **Mandatory pairing** in every mode, with a single-use fragment secret and an
-  HttpOnly `__Host-` session cookie; sessions live only in daemon memory.
+  **re-validating the Access JWT** on every request and reconnect. In named mode
+  Access is the interactive gate: the app session is provisioned from the verified
+  Access identity, capped at that token's expiry — and Access is also the **sole
+  session-lifetime authority**, since `idle_lock` and logout do not stop a new
+  session from being provisioned (see
+  [Session lifetime in named mode](#session-lifetime-in-named-mode)).
+- **Mandatory single-use pairing in quick mode**, which has no edge identity — a
+  fragment-borne secret exchanged for an HttpOnly `__Host-` session cookie.
+  Sessions in either mode live only in daemon memory.
 - One central middleware enforcing Host allowlist → Access JWT → session cookie →
   exact Origin allowlist → `http.CrossOriginProtection` + CSRF token → method,
   content-type, body-size, rate-limit, and deadline checks.
@@ -623,8 +740,8 @@ version matches `herdr-plugin.toml` and the binary's build info, on a commit tha
 is already on `main`:
 
 ```sh
-git tag -a v0.2.0 -m "herdr-phone v0.2.0"
-git push origin v0.2.0
+git tag -a v0.3.0 -m "herdr-phone v0.3.0"
+git push origin v0.3.0
 ```
 
 The release workflow requires an annotated/signed tag whose commit is on `main`,
@@ -655,9 +772,15 @@ the publish job, and forks never receive secrets (`pull_request`, not
 - **`403` / Access denied in the browser.** Your Cloudflare Access policy must
   allow your identity, and `allowed_identities` (if set) must list your exact
   email. Access is deny-by-default.
-- **Paired but requests fail after a while (named mode).** Sessions expire at the
-  earlier of `session_ttl` and the Access JWT expiry. Re-authenticate through
-  Access; the origin re-validates the JWT on every request.
+- **`401` / requests fail after a while (named mode).** Your Cloudflare Access
+  session expired. Reload the public URL and re-authenticate through Access; the
+  origin re-validates the JWT on every request. A pairing link is not the remedy in
+  named mode.
+- **"End session" or the idle lock did not lock me out (named mode).** Expected,
+  and deliberate: the relay re-provisions a session from your still-valid Access
+  identity. To actually end access, revoke the Access session in Cloudflare Zero
+  Trust or run `herdr-phone stop`. See
+  [Session lifetime in named mode](#session-lifetime-in-named-mode).
 - **Quick Tunnel won't start.** Set both `quick_enabled = true` and start with
   `--quick`. Remember a Quick Tunnel has no edge identity and is for testing only.
 - **Terminal shows a conflict when opening a pane.** Only one controller owns
@@ -665,19 +788,20 @@ the publish job, and forks never receive secrets (`pull_request`, not
 - **The public URL doesn't reach this instance (quick mode).** Herdr Phone
   verifies the public URL against a one-time instance probe before printing the
   pairing link; a mismatch means a stale or foreign tunnel — stop and restart.
-- **The pairing link expired.** The secret is single-use. Run
+- **The pairing link expired (quick mode).** The secret is single-use. Run
   `herdr-phone setup-link` for a fresh one.
 - **Something is compromised.** Follow the revocation steps in
   [SECURITY.md](SECURITY.md): stop the daemon, revoke Access sessions, and rotate
   the tunnel token.
 
-## Non-goals (v0.2.0)
+## Non-goals (v0.3.0)
 
 No Windows host support; no native iOS/Android apps, APNs, or background push
 actions; no multi-user collaboration or simultaneous terminal controllers; no
 automatic Cloudflare tunnel/DNS/Access provisioning; no automatic `cloudflared`
 installation or self-update; no start-at-login or reboot survival without user
-configuration; no multi-session Herdr aggregation; no parsing of agent-specific
+configuration; no persistent or on-disk app sessions (they stay in daemon memory);
+no multi-session Herdr aggregation; no parsing of agent-specific
 approval screens into native controls; and no file browsing beyond directory
 selection, file upload, clipboard image transfer, or arbitrary downloads. See
 [SPEC.md](SPEC.md) §21 for the full list.

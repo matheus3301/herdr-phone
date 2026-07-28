@@ -8,10 +8,11 @@ keystrokes into live panes. Anyone who can both reach the front door *and* clear
 its authentication can run arbitrary commands as your macOS user, exactly as if
 they had an SSH session to your Mac.
 
-Treat the public URL, your Cloudflare Access identity, and the pairing link with
-the same care you would treat a root login. The plugin's security bar is that of
-an SSH client, not a monitoring page. Every control below exists to keep the
-door closed by default and to make an authorized session the only way in.
+Treat the public URL and your Cloudflare Access identity — and, in quick mode, the
+pairing link — with the same care you would treat a root login. In named mode,
+clearing Cloudflare Access *is* clearing the front door. The plugin's security bar
+is that of an SSH client, not a monitoring page. Every control below exists to keep
+the door closed by default and to make an authorized session the only way in.
 
 ## Supported Versions
 
@@ -20,7 +21,8 @@ only the most recent minor version is supported.
 
 | Version | Supported |
 | ------- | --------- |
-| 0.1.x   | ✅        |
+| 0.3.x   | ✅        |
+| < 0.3   | ❌        |
 
 ## Reporting a Vulnerability
 
@@ -48,7 +50,9 @@ following defenses must all hold; none of them alone is sufficient.
   is reachable from the internet only through an outbound-only Cloudflare Tunnel.
   It is never bound to `0.0.0.0` or a LAN address in production.
 - **Named tunnels** sit behind a Cloudflare Access application (deny-by-default).
-  Access adds a signed `Cf-Access-Jwt-Assertion` header at the edge.
+  Access adds a signed `Cf-Access-Jwt-Assertion` header at the edge, and it is the
+  interactive gate: clearing Access is what authorizes an operator. The origin does
+  not take the edge's word for it — see the next section.
 - **Quick Tunnels** have no Access identity at the edge and are **off by
   default**. They must be explicitly enabled in config and still require app
   pairing. They are for testing only, carry no uptime guarantee, and expose a
@@ -69,19 +73,100 @@ HTTP request and every WebSocket handshake**:
   `common_name` match.
 - Fails closed when JWKS is unavailable and no valid cached key exists.
 
-### Application: pairing and session
+Because authorization is re-proven cryptographically on every single request and
+handshake — not accepted once at sign-in — Access is strong enough to be the sole
+interactive gate in named mode. That is the entire basis for the session model
+below.
+
+### Application: sessions differ by mode
+
+An app session is an opaque, HttpOnly, Secure, `SameSite=Strict` `__Host-` cookie
+with a per-session CSRF token. **Sessions live only in daemon memory** and expire
+at the earlier of the configured TTL and the verified Access JWT expiry. Those
+rules are identical however the session was established, and there is no on-disk
+or persistent session store.
+
+**Named mode: Cloudflare Access alone is the gate.** A request that clears the
+origin's JWT verification but carries no valid session cookie is given a session
+bound to the verified Access identity, and no pairing link is involved.
+
+- The Access claims are re-read at provisioning time, so the session is bound to
+  the exact identity that authorized that request and its hard expiry is capped at
+  that token's `exp`. Any verification failure mints nothing and the request is
+  rejected. An identity with neither `email` nor `common_name` is not
+  provisionable.
+- A live session already bound to the same identity is reused rather than
+  duplicated, so a cookie-less client cannot inflate the in-memory session store.
+- Provisioning is audited as `session.auto` with the subject and the non-secret
+  audit id. The bearer cookie value is never recorded.
+- Auto-provisioning grants **no** exemption from any other control: Origin,
+  `http.CrossOriginProtection`, CSRF on mutating routes, rate limits, body bounds,
+  and deadlines all apply exactly as they do to a paired session. A brand-new
+  session cannot mutate until the SPA has read its CSRF token from `GET /session`.
+- Trade-off, stated plainly: before v0.3.0 named mode also required an
+  out-of-band pairing secret as a second factor. It no longer does. An attacker
+  who can fully impersonate an allowed Access identity now reaches the app
+  directly, so the strength of your Access policy (SSO, MFA, device posture, a
+  tight `allowed_identities`) is the strength of the front door. Harden it
+  accordingly.
+
+#### Named mode: Cloudflare Access is the sole session-lifetime authority
+
+Auto-provisioning has a consequence that must not be glossed over. **In named mode
+nothing on the app side can end a session, because a new one is provisioned from
+the still-valid Access identity on the very next request.**
+
+- **`server.idle_lock` does not re-lock a named-mode session.** The idle session is
+  dropped from memory and immediately replaced. No re-authentication is prompted.
+- **`server.session_ttl` caps one session, not access.** The replacement session
+  starts a fresh TTL, still capped at the Access token's `exp`.
+- **The in-app "End session" (`DELETE /session`) does not revoke access in named
+  mode.** It revokes that session record and clears the device's cookie; the next
+  request re-provisions. Treat it as a device-local sign-out, not a kill switch.
+- **Quick mode is unaffected.** There, `idle_lock`, `session_ttl`, and "End session"
+  each genuinely lock the operator out, because nothing can re-establish a session
+  without the single-use pairing secret.
+
+This is a deliberate, accepted trade: the pairing second factor was removed in
+exchange for seamless access, and session lifetime is delegated to Cloudflare
+Access along with identity. The practical consequences for an operator:
+
+- **Set the Access application's session duration in Cloudflare Zero Trust to a
+  value you would accept as an unattended-terminal window.** It is your idle
+  timeout, and it is the only one.
+- **To end named-mode access, do one of these** (the same two controls as
+  [Immediate Revocation](#immediate-revocation) steps 1 and 3):
+
+  ```sh
+  herdr-phone stop        # immediate: drops every in-memory session, kills the tunnel
+  ```
+
+  or revoke the user's Access session in the Cloudflare Zero Trust dashboard — or
+  remove the identity from the Access policy and from `allowed_identities` — which
+  takes effect once the current token expires.
+
+**Quick mode: pairing is mandatory and unchanged.** A Quick Tunnel has no edge
+identity, so no session is ever auto-provisioned there.
 
 - Each daemon instance mints a 256-bit single-use pairing secret. The setup link
   carries it in the URL **fragment** (`#pair=…`), which browsers never send in
   HTTP requests; the app strips it from history before pairing.
-- Pairing is constant-time compared and single-use; success rotates the secret
-  and sets an opaque, HttpOnly, Secure, `SameSite=Strict` `__Host-` session
-  cookie. Sessions live only in daemon memory and expire at the earlier of the
-  configured TTL and the verified Access JWT expiry.
+- Pairing is constant-time compared and single-use; success rotates the secret and
+  sets the session cookie. Without it, every session-authenticated route answers
+  `401`.
+
+`POST /pair` also stays live in named mode as a re-bind/recovery path, and it is
+not a bypass: a named-mode request without a valid Access JWT is rejected before
+pairing is considered.
+
+**Every request, in either mode:**
+
 - All routes pass through one central middleware enforcing, in order: Host
-  allowlist, Access JWT (named mode), session cookie, exact Origin allowlist on
-  every WebSocket and mutating request, Go `http.CrossOriginProtection` plus a
-  CSRF token, and method/content-type/body-size/rate limits.
+  allowlist, Access JWT (named mode), session cookie (auto-provisioned from the
+  verified Access identity in named mode; required in quick mode), exact Origin
+  allowlist on every WebSocket and mutating request, Go
+  `http.CrossOriginProtection` plus a CSRF token, and
+  method/content-type/body-size/rate limits.
 - A strict Content-Security-Policy serves only self-hosted assets, disallows
   `unsafe-eval` and runtime CDNs, blocks framing, and explicitly allows only the
   same-origin WebSocket.
@@ -175,19 +260,29 @@ this order.
    kill the `herdr-phone serve` process group; the tunnel dies with it.
 
 2. **Invalidate all app sessions.** Sessions live only in daemon memory, so
-   stopping the daemon (step 1) already invalidates every session and CSRF
-   token. Rotating the pairing secret alone does **not** end existing sessions —
-   restart is what clears them. To hand out a fresh, single-use pairing link
-   without a full restart, run:
+   stopping the daemon (step 1) already invalidates every session and CSRF token,
+   auto-provisioned ones included. Rotating the pairing secret alone does **not**
+   end existing sessions — restart is what clears them. To hand out a fresh,
+   single-use pairing link without a full restart, run:
 
    ```sh
    herdr-phone setup-link
    ```
 
+   In **named mode** nothing app-side is sufficient on its own — not this step, not
+   `idle_lock`, not the in-app "End session". While the daemon is running and the
+   compromised Access identity still holds a valid JWT, the next request simply
+   provisions a new session
+   ([why](#named-mode-cloudflare-access-is-the-sole-session-lifetime-authority)). Do
+   step 3 as well, or leave the daemon stopped until you have.
+
 3. **Revoke Cloudflare Access sessions (named mode).** In the Cloudflare
-   Zero Trust dashboard, revoke the user's Access sessions (or tighten the
-   Access policy). Because the origin re-validates the JWT on every request and
-   reconnect, a revoked Access session cannot reconnect after its token expires.
+   Zero Trust dashboard, revoke the user's Access sessions, or remove them from the
+   Access policy and from `allowed_identities`. Because the origin re-validates the
+   JWT on every request and reconnect, and an auto-provisioned app session is
+   capped at that JWT's expiry, a revoked identity loses access once its current
+   token expires — and immediately if you also restart the daemon (step 1). In
+   named mode this step, not pairing rotation, is the real session revocation.
 
 4. **Rotate the tunnel token (named mode).** In the Cloudflare dashboard, rotate
    the tunnel token, then force-disconnect existing connections. Update your
@@ -236,10 +331,21 @@ this order.
 
 Please treat any of the following as a security vulnerability and report it
 privately: a way to reach an authorized control path without a valid Access JWT
-(named mode) or valid session; any secret appearing in argv, logs, state,
+(named mode) or valid session; a session auto-provisioned in quick mode, or in
+named mode from an unverified, expired, or non-allowlisted identity; an
+auto-provisioned session that skips Origin, `CrossOriginProtection`, CSRF, or rate
+limiting; any secret appearing in argv, logs, state,
 browser storage, or git; an escape sequence reaching the browser or a log
 unfiltered; a mutation executing without its required confirmation nonce or
 after a lifecycle-generation change; a run read succeeding without a matching
 lifecycle generation, or agent output reaching a log, an audit record, or disk; a
 reused `request_id` replaying a response for a different payload; or a way to bind
 the origin off loopback.
+
+**Known and accepted, so not a vulnerability:** in named mode, access surviving
+`server.idle_lock`, `server.session_ttl`, or the in-app "End session", because the
+relay re-provisions a session from the still-valid Cloudflare Access identity. This
+is the documented posture described in
+[Named mode: Cloudflare Access is the sole session-lifetime authority](#named-mode-cloudflare-access-is-the-sole-session-lifetime-authority).
+A report that named-mode access continues after an *Access* session revocation, or
+after the Access token's `exp`, **is** in scope.

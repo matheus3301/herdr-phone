@@ -24,6 +24,7 @@ const (
 	ActionStart      = "start"
 	ActionStartQuick = "start-quick"
 	ActionStop       = "stop"
+	ActionToggle     = "toggle"
 	ActionStatus     = "status"
 	ActionSetupLink  = "setup-link"
 	ActionDoctor     = "doctor"

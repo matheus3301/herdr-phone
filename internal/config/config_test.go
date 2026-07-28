@@ -13,7 +13,10 @@ func envMap(m map[string]string) func(string) string {
 }
 
 // validNamed is a complete, valid named-mode configuration used as a base that
-// individual tests mutate to exercise a single failure.
+// individual tests mutate to exercise a single failure. It carries a non-empty
+// allowed_identities because named mode is Access-only: the allowlist is the last
+// origin-side identity filter, so a config without one (and without the explicit
+// allow_any_identity opt-out) is invalid.
 const validNamed = `
 [server]
 host = "127.0.0.1"
@@ -28,6 +31,7 @@ token_command = ["print-token"]
 enabled = true
 team_domain = "example.cloudflareaccess.com"
 audience = "aud-123"
+allowed_identities = ["op@example.com"]
 `
 
 const validQuick = `
@@ -70,6 +74,10 @@ func TestDefaults(t *testing.T) {
 	}
 	if !d.Access.Enabled || d.Access.JWKSTTL != DefaultJWKSTTL {
 		t.Errorf("access defaults: %+v", d.Access)
+	}
+	// No implicit blanket allow: the opt-out must be declared, never defaulted.
+	if d.Access.AllowAnyIdentity || d.Access.HasIdentityAllowlist() {
+		t.Errorf("access identity gate defaults: %+v", d.Access)
 	}
 	if d.Herdr.PollHot != DefaultPollHot || d.Herdr.PollCold != DefaultPollCold {
 		t.Errorf("herdr defaults: %+v", d.Herdr)
@@ -194,6 +202,118 @@ func TestNamedAccessRequiresTeamDomainAndAudience(t *testing.T) {
 	mustReject(t, noTeam, "team_domain")
 	noAud := strings.Replace(validNamed, `audience = "aud-123"`, `audience = ""`, 1)
 	mustReject(t, noAud, "audience")
+}
+
+// ---- named-mode identity gate ---------------------------------------------
+//
+// Named mode is Access-only since v0.3.0: pairing is no longer a second factor
+// there, so auth.access.allowed_identities is the last identity filter the origin
+// applies. It must be non-empty unless the operator declares allow_any_identity.
+
+// namedWithoutAllowlist is validNamed with the allowlist line removed.
+func namedWithoutAllowlist() string {
+	return strings.Replace(validNamed, "allowed_identities = [\"op@example.com\"]\n", "", 1)
+}
+
+func TestNamedRequiresIdentityAllowlist(t *testing.T) {
+	t.Parallel()
+	// Absent entirely.
+	mustReject(t, namedWithoutAllowlist(), "requires a non-empty auth.access.allowed_identities")
+	// Explicitly empty.
+	mustReject(t, namedWithoutAllowlist()+"allowed_identities = []\n", "requires a non-empty auth.access.allowed_identities")
+	// The opt-out must be explicitly true, not merely present.
+	mustReject(t, namedWithoutAllowlist()+"allow_any_identity = false\n", "requires a non-empty auth.access.allowed_identities")
+}
+
+func TestNamedIdentityAllowlistErrorIsActionable(t *testing.T) {
+	t.Parallel()
+	_, err := LoadData([]byte(namedWithoutAllowlist()), envMap(map[string]string{"HOME": "/home/tester"}))
+	if err == nil {
+		t.Fatal("expected an error for a named config with no identity allowlist")
+	}
+	// The operator must be told both remedies by name, and see a usable example.
+	for _, want := range []string{
+		"auth.access.allowed_identities",
+		`allowed_identities = ["you@example.com"]`,
+		"auth.access.allow_any_identity = true",
+	} {
+		if !strings.Contains(err.Error(), want) {
+			t.Errorf("error must mention %q; got: %v", want, err)
+		}
+	}
+}
+
+func TestNamedAllowAnyIdentityOptOut(t *testing.T) {
+	t.Parallel()
+	cfg := mustLoad(t, namedWithoutAllowlist()+"allow_any_identity = true\n")
+	if !cfg.Access.AllowAnyIdentity {
+		t.Error("allow_any_identity = true must be parsed")
+	}
+	if cfg.Access.HasIdentityAllowlist() {
+		t.Error("no allowlist was configured")
+	}
+	// Explicitly empty list plus the opt-out is equally valid.
+	cfg2 := mustLoad(t, namedWithoutAllowlist()+"allowed_identities = []\nallow_any_identity = true\n")
+	if !cfg2.Access.AllowAnyIdentity || cfg2.Access.HasIdentityAllowlist() {
+		t.Errorf("access = %+v", cfg2.Access)
+	}
+}
+
+func TestNamedIdentityAllowlistAccepted(t *testing.T) {
+	t.Parallel()
+	cfg := mustLoad(t, validNamed)
+	if !cfg.Access.HasIdentityAllowlist() {
+		t.Fatal("a non-empty allowlist must be recognized")
+	}
+	if len(cfg.Access.AllowedIdentities) != 1 || cfg.Access.AllowedIdentities[0] != "op@example.com" {
+		t.Errorf("allowed_identities = %v", cfg.Access.AllowedIdentities)
+	}
+	if cfg.Access.AllowAnyIdentity {
+		t.Error("allow_any_identity must default to false")
+	}
+
+	// The opt-out waives only the requirement, never the enforcement: a configured
+	// allowlist is retained (and still matched by the verifier) alongside it.
+	both := strings.Replace(validNamed, "allowed_identities = [\"op@example.com\"]",
+		"allowed_identities = [\"op@example.com\"]\nallow_any_identity = true", 1)
+	cfgBoth := mustLoad(t, both)
+	if !cfgBoth.Access.HasIdentityAllowlist() || !cfgBoth.Access.AllowAnyIdentity {
+		t.Errorf("access = %+v", cfgBoth.Access)
+	}
+}
+
+// TestBlankIdentityIsNotAnAllowlist keeps a whitespace-only entry from passing as
+// an allowlist: the verifier drops blank entries, so accepting one here would
+// reinstate exactly the wide-open state this validation exists to prevent.
+func TestBlankIdentityIsNotAnAllowlist(t *testing.T) {
+	t.Parallel()
+	mustReject(t, namedWithoutAllowlist()+"allowed_identities = [\"   \"]\n", "must not be empty")
+	if (Access{AllowedIdentities: []string{"", "  "}}).HasIdentityAllowlist() {
+		t.Error("blank entries must not count as an allowlist")
+	}
+}
+
+// TestQuickModeIgnoresIdentityAllowlist pins the quick-mode contract: a quick
+// tunnel has no edge identity, so pairing is its gate and the allowlist
+// requirement must not apply.
+func TestQuickModeIgnoresIdentityAllowlist(t *testing.T) {
+	t.Parallel()
+	// No [auth.access] block at all.
+	if cfg := mustLoad(t, validQuick); cfg.Access.HasIdentityAllowlist() || cfg.Access.AllowAnyIdentity {
+		t.Errorf("quick access = %+v", cfg.Access)
+	}
+	// An Access block with an explicitly empty allowlist and no opt-out is still
+	// valid in quick mode.
+	withAccess := validQuick + `
+[auth.access]
+enabled = true
+team_domain = "example.cloudflareaccess.com"
+audience = "aud-123"
+allowed_identities = []
+`
+	if cfg := mustLoad(t, withAccess); cfg.Cloudflare.Mode != ModeQuick {
+		t.Errorf("mode = %q", cfg.Cloudflare.Mode)
+	}
 }
 
 func TestTeamDomainFormat(t *testing.T) {

@@ -60,6 +60,20 @@ func runStart(env Environment, args []string) int {
 		fmt.Fprintf(env.Stderr, "herdr-phone start: %v\n", err)
 		return exitError
 	}
+	printStartResult(env, res)
+	return exitOK
+}
+
+// printStartResult reports a start outcome and ends with the one line an operator
+// acts on: the URL to open on the phone.
+//
+// The open target differs by mode because the app gate differs. In named mode
+// Cloudflare Access is the interactive gate, so the bare public URL is enough and
+// no pairing secret is involved — the `Pairing:` line is deliberately withheld
+// there rather than advertising a link that plays no part in signing in. Quick
+// tunnels have no edge identity, so the single-use pairing link is the only way in
+// and is printed on its own `Pairing:` line as before.
+func printStartResult(env Environment, res StartResult) {
 	if res.AlreadyRunning {
 		fmt.Fprintf(env.Stdout, "herdr-phone is already running (%s mode).\n", res.Mode)
 	} else {
@@ -68,9 +82,91 @@ func runStart(env Environment, args []string) int {
 	if res.PublicURL != "" {
 		fmt.Fprintf(env.Stdout, "Public URL: %s\n", res.PublicURL)
 	}
-	if res.PairingURL != "" {
+	if res.Mode == config.ModeQuick && res.PairingURL != "" {
 		fmt.Fprintf(env.Stdout, "Pairing:    %s\n", res.PairingURL)
 	}
+	url, isPairing := openURL(res)
+	if url == "" {
+		return
+	}
+	fmt.Fprintf(env.Stdout, "\nOpen on your phone: %s\n", url)
+	// Each advisory must be true of the URL just printed. Only a named-mode public
+	// URL is reachable on Access alone; a quick tunnel without a pairing link is a
+	// dead end until one is issued, and must never claim Access signs anyone in.
+	switch {
+	case isPairing:
+		fmt.Fprintln(env.Stdout, "This pairing link works once; run `herdr-phone setup-link` for a new one.")
+	case res.Mode == config.ModeQuick:
+		fmt.Fprintln(env.Stdout, "Quick mode needs a pairing link to get in; run `herdr-phone setup-link` for one.")
+	default:
+		fmt.Fprintln(env.Stdout, "Cloudflare Access signs you in; no pairing link is needed.")
+	}
+}
+
+// openURL picks the URL to open for a start result and reports whether the chosen
+// URL is a pairing link (so the caller can describe it accurately). Quick mode
+// uses the pairing URL, named mode the bare public URL. Each falls back to the
+// other only if its preferred URL is missing, so an unexpected gap still leaves
+// the operator something reachable.
+func openURL(res StartResult) (url string, isPairing bool) {
+	if res.Mode == config.ModeQuick {
+		if res.PairingURL != "" {
+			return res.PairingURL, true
+		}
+		return res.PublicURL, false
+	}
+	if res.PublicURL != "" {
+		return res.PublicURL, false
+	}
+	return res.PairingURL, res.PairingURL != ""
+}
+
+// runToggle handles `toggle`: stop a running daemon, otherwise start one in the
+// configured (named by default) mode. It is the keybindable one-tap action, so it
+// reuses the same Status/Start/Stop seams and deadlines as the explicit commands.
+func runToggle(env Environment) int {
+	cfg, code, done := loadConfigOrReport(env, "toggle")
+	if done {
+		return code
+	}
+	rt, err := env.runtime()
+	if err != nil {
+		fmt.Fprintf(env.Stderr, "herdr-phone toggle: %v\n", err)
+		return exitError
+	}
+
+	statusCtx, cancelStatus := context.WithTimeout(context.Background(), statusTimeout)
+	defer cancelStatus()
+	st, err := rt.Status(statusCtx, cfg)
+	if err != nil {
+		fmt.Fprintf(env.Stderr, "herdr-phone toggle: %v\n", err)
+		return exitError
+	}
+
+	if st.Running {
+		ctx, cancel := context.WithTimeout(context.Background(), stopTimeout)
+		defer cancel()
+		res, err := rt.Stop(ctx, cfg)
+		if err != nil {
+			fmt.Fprintf(env.Stderr, "herdr-phone toggle: %v\n", err)
+			return exitError
+		}
+		if res.WasRunning {
+			fmt.Fprintln(env.Stdout, "herdr-phone is now off (stopped).")
+		} else {
+			fmt.Fprintln(env.Stdout, "herdr-phone is now off (was not running).")
+		}
+		return exitOK
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), startTimeout)
+	defer cancel()
+	res, err := rt.Start(ctx, cfg, StartOptions{})
+	if err != nil {
+		fmt.Fprintf(env.Stderr, "herdr-phone toggle: %v\n", err)
+		return exitError
+	}
+	printStartResult(env, res)
 	return exitOK
 }
 

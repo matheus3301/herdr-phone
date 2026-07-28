@@ -203,6 +203,65 @@ func (s *SessionStore) Get(id string) (*Session, bool) {
 	return sess.clone(), true
 }
 
+// GetByIdentity returns a copy of the live session bound to the same verified
+// identity as id, refreshing its LastSeen exactly as Get does. The reuse key is
+// the identity subject: the verified Access email when present, else the
+// common_name. It exists so a named-mode operator arriving without a session
+// cookie is handed back the session they already have instead of accumulating a
+// fresh one on every cookie-less request.
+//
+// It returns false for a quick-mode identity (quick tunnels have no edge
+// identity to key on, so every pairing keeps its own session), for an identity
+// with no subject, and when no live session matches. When several live sessions
+// share a subject (e.g. an earlier paired session), the most recently created
+// one wins, with the session id as a deterministic tie-break, so repeated
+// lookups are stable.
+func (s *SessionStore) GetByIdentity(id Identity) (*Session, bool) {
+	key := IdentitySubject(id)
+	if key == "" {
+		return nil, false
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	now := s.now()
+	var best *Session
+	for sid, sess := range s.sessions {
+		if s.expiredLocked(sess, now) {
+			delete(s.sessions, sid)
+			continue
+		}
+		if IdentitySubject(sess.Identity) != key {
+			continue
+		}
+		switch {
+		case best == nil,
+			sess.CreatedAt.After(best.CreatedAt),
+			sess.CreatedAt.Equal(best.CreatedAt) && sess.ID > best.ID:
+			best = sess
+		}
+	}
+	if best == nil {
+		return nil, false
+	}
+	best.LastSeen = now
+	return best.clone(), true
+}
+
+// IdentitySubject is the stable, non-secret reuse key for an identity: the
+// verified email, else the common_name. It is empty for a quick-mode identity
+// (no edge identity) and for an identity carrying neither claim, and callers
+// must treat an empty key as "not reusable".
+func IdentitySubject(id Identity) string {
+	if id.Quick {
+		return ""
+	}
+	if id.Email != "" {
+		return id.Email
+	}
+	return id.CommonName
+}
+
 // Delete removes a session (logout / revocation).
 func (s *SessionStore) Delete(id string) {
 	s.mu.Lock()

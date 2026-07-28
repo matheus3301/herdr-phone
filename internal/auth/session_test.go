@@ -85,6 +85,147 @@ func TestSession_IdleExpiry(t *testing.T) {
 	}
 }
 
+func TestIdentitySubject_ReuseKey(t *testing.T) {
+	t.Parallel()
+	if got := IdentitySubject(Identity{Email: "op@example.com", CommonName: "svc"}); got != "op@example.com" {
+		t.Errorf("email must win the key: %q", got)
+	}
+	if got := IdentitySubject(Identity{CommonName: "svc"}); got != "svc" {
+		t.Errorf("common_name key = %q", got)
+	}
+	// A quick identity and an identity with no claim are never reusable.
+	if got := IdentitySubject(Identity{Quick: true}); got != "" {
+		t.Errorf("quick identity key = %q, want empty", got)
+	}
+	if got := IdentitySubject(Identity{Email: "op@example.com", Quick: true}); got != "" {
+		t.Errorf("quick identity key = %q, want empty even with an email", got)
+	}
+	if got := IdentitySubject(Identity{}); got != "" {
+		t.Errorf("claimless identity key = %q, want empty", got)
+	}
+}
+
+func TestSession_GetByIdentity(t *testing.T) {
+	t.Parallel()
+	now := time.Unix(1000, 0)
+	store := NewSessionStore(time.Hour, 0, WithSessionClock(func() time.Time { return now }))
+	sess, err := store.Create(Identity{Email: "op@example.com"}, time.Time{})
+	if err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+
+	got, ok := store.GetByIdentity(Identity{Email: "op@example.com"})
+	if !ok {
+		t.Fatal("GetByIdentity should find the session for the same email")
+	}
+	if got.ID != sess.ID || got.AuditID != sess.AuditID || got.CSRFToken != sess.CSRFToken {
+		t.Errorf("GetByIdentity returned a different session: %+v", got)
+	}
+	if !got.ExpiresAt.Equal(sess.ExpiresAt) {
+		t.Errorf("reused session expiry = %v, want the existing %v", got.ExpiresAt, sess.ExpiresAt)
+	}
+	// A service-token identity keys on common_name.
+	if _, ok := store.GetByIdentity(Identity{CommonName: "svc"}); ok {
+		t.Error("unknown common_name must not match")
+	}
+	if _, ok := store.GetByIdentity(Identity{Email: "other@example.com"}); ok {
+		t.Error("a different email must not match")
+	}
+	// Lookup is idempotent and does not create anything.
+	if store.Len() != 1 {
+		t.Errorf("Len = %d, want 1 (lookup must not create)", store.Len())
+	}
+}
+
+func TestSession_GetByIdentityNeverMatchesQuickOrClaimless(t *testing.T) {
+	t.Parallel()
+	store := NewSessionStore(time.Hour, 0)
+	if _, err := store.Create(Identity{Quick: true}, time.Time{}); err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+	if _, err := store.Create(Identity{}, time.Time{}); err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+	// Quick sessions are pairing-bound: each pairing keeps its own session, so no
+	// lookup may ever collapse two of them.
+	if _, ok := store.GetByIdentity(Identity{Quick: true}); ok {
+		t.Error("a quick identity must never be reused")
+	}
+	if _, ok := store.GetByIdentity(Identity{}); ok {
+		t.Error("a claimless identity must never be reused")
+	}
+}
+
+func TestSession_GetByIdentitySkipsExpiredAndPrefersNewest(t *testing.T) {
+	t.Parallel()
+	now := time.Unix(1000, 0)
+	store := NewSessionStore(time.Hour, 0, WithSessionClock(func() time.Time { return now }))
+	id := Identity{Email: "op@example.com"}
+
+	stale, _ := store.Create(id, now.Add(time.Minute)) // hard expiry in one minute
+	now = now.Add(30 * time.Second)
+	fresh, _ := store.Create(id, time.Time{})
+
+	// Both live: the most recently created one wins, deterministically.
+	for range 3 {
+		got, ok := store.GetByIdentity(id)
+		if !ok {
+			t.Fatal("GetByIdentity should find a live session")
+		}
+		if got.ID != fresh.ID {
+			t.Fatalf("GetByIdentity = %q, want the newest session %q", got.ID, fresh.ID)
+		}
+	}
+
+	// Past the stale session's hard expiry it is neither returned nor retained.
+	now = now.Add(2 * time.Minute)
+	got, ok := store.GetByIdentity(id)
+	if !ok || got.ID != fresh.ID {
+		t.Fatalf("GetByIdentity after expiry = %+v, %v", got, ok)
+	}
+	if _, ok := store.Get(stale.ID); ok {
+		t.Error("the expired session must not resolve")
+	}
+	if store.Len() != 1 {
+		t.Errorf("Len = %d, want 1 (expired sessions evicted during lookup)", store.Len())
+	}
+
+	// Once everything expires, nothing matches.
+	now = now.Add(2 * time.Hour)
+	if _, ok := store.GetByIdentity(id); ok {
+		t.Error("no live session must match after the TTL")
+	}
+}
+
+func TestSession_GetByIdentityRefreshesLastSeen(t *testing.T) {
+	t.Parallel()
+	now := time.Unix(1000, 0)
+	store := NewSessionStore(12*time.Hour, 30*time.Minute, WithSessionClock(func() time.Time { return now }))
+	id := Identity{Email: "op@example.com"}
+	sess, _ := store.Create(id, time.Time{})
+
+	// Repeated cookie-less arrivals inside the idle window keep the session alive
+	// the same way Get does, so auto-provisioning never idles out mid-use.
+	for range 4 {
+		now = now.Add(20 * time.Minute)
+		got, ok := store.GetByIdentity(id)
+		if !ok {
+			t.Fatal("session inside the idle window should be live")
+		}
+		if !got.LastSeen.Equal(now) {
+			t.Errorf("LastSeen = %v, want %v", got.LastSeen, now)
+		}
+	}
+	if _, ok := store.Get(sess.ID); !ok {
+		t.Error("the session should still resolve by id")
+	}
+
+	now = now.Add(31 * time.Minute)
+	if _, ok := store.GetByIdentity(id); ok {
+		t.Error("session past the idle window must expire")
+	}
+}
+
 func TestSession_Delete(t *testing.T) {
 	t.Parallel()
 	store := NewSessionStore(time.Hour, 0)

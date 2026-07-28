@@ -10,6 +10,7 @@
  *   - agent.kind ← agent, agent.name ← name||agent, title ← terminal_title_stripped
  *   - ordering ← authoritative array order (index)
  */
+import { relayMode } from "./relay-mode";
 import type {
   AgentStatus,
   Capabilities,
@@ -161,7 +162,7 @@ export function normalizeRunContract(runs: WireRunCapabilities | undefined | nul
 
 export function normalizeCapabilities(c: WireCapabilities, phoneVersion: string): Capabilities {
   const doc = c.capabilities ?? ({} as WireCapabilities["capabilities"]);
-  const mode = c.status?.mode === "named" ? "named" : "quick";
+  const mode = relayMode(c.status?.mode);
   return {
     operations: c.operations ?? [],
     runs: normalizeRunContract(c.runs),
@@ -184,7 +185,7 @@ export function normalizeCapabilities(c: WireCapabilities, phoneVersion: string)
  * mutable session without re-pairing.
  */
 export function sessionFromResponse(p: WirePairResponse): SessionInfo {
-  const mode = p.identity?.mode === "named" ? "named" : "quick";
+  const mode = relayMode(p.identity?.mode);
   return {
     operator: p.identity?.display || p.identity?.subject || (mode === "quick" ? "Quick Tunnel operator" : "operator"),
     mode,

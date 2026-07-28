@@ -66,6 +66,45 @@ func TestStopError(t *testing.T) {
 	}
 }
 
+func TestToggleStatusError(t *testing.T) {
+	t.Parallel()
+	rt := &fakeRuntime{statusErr: errors.New("state dir unreadable")}
+	env, _, errb := newEnv(t, rt, "toggle")
+	if code := Main(env); code != exitError {
+		t.Fatalf("exit = %d, want %d", code, exitError)
+	}
+	if !strings.Contains(errb.String(), "state dir unreadable") {
+		t.Errorf("stderr = %q", errb.String())
+	}
+	if rt.startCalled || rt.stopCalled {
+		t.Error("toggle must not act on an unknown state")
+	}
+}
+
+func TestToggleStartError(t *testing.T) {
+	t.Parallel()
+	rt := &fakeRuntime{status: Status{Running: false}, startErr: errors.New("cloudflared missing")}
+	env, _, errb := newEnv(t, rt, "toggle")
+	if code := Main(env); code != exitError {
+		t.Fatalf("exit = %d, want %d", code, exitError)
+	}
+	if !strings.Contains(errb.String(), "cloudflared missing") {
+		t.Errorf("stderr = %q", errb.String())
+	}
+}
+
+func TestToggleStopError(t *testing.T) {
+	t.Parallel()
+	rt := &fakeRuntime{status: Status{Running: true}, stopErr: errors.New("control socket unreachable")}
+	env, _, errb := newEnv(t, rt, "toggle")
+	if code := Main(env); code != exitError {
+		t.Fatalf("exit = %d, want %d", code, exitError)
+	}
+	if !strings.Contains(errb.String(), "control socket unreachable") {
+		t.Errorf("stderr = %q", errb.String())
+	}
+}
+
 func TestStatusError(t *testing.T) {
 	t.Parallel()
 	rt := &fakeRuntime{statusErr: errors.New("not running")}

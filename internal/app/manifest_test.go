@@ -101,6 +101,7 @@ func TestManifestActionsAgreement(t *testing.T) {
 		ActionStart:      {"./bin/herdr-phone", "start"},
 		ActionStartQuick: {"./bin/herdr-phone", "start", "--quick"},
 		ActionStop:       {"./bin/herdr-phone", "stop"},
+		ActionToggle:     {"./bin/herdr-phone", "toggle"},
 		ActionStatus:     {"./bin/herdr-phone", "status"},
 		ActionSetupLink:  {"./bin/herdr-phone", "setup-link"},
 		ActionDoctor:     {"./bin/herdr-phone", "doctor"},

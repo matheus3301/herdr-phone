@@ -15,9 +15,24 @@
 host = "127.0.0.1"
 # Loopback port for the origin server (1-65535). Must be free at start.
 port = 8787
-# App session lifetime. A session also expires at the verified Access JWT expiry.
+# App session lifetime. Sessions are in-memory only, and a session also expires at
+# the verified Access JWT expiry - whichever comes first. This applies both to a
+# paired quick-mode session and to a named-mode session provisioned from the
+# verified Access identity.
+#
+# In NAMED mode this caps one session, not access: when a session expires the next
+# request is transparently given a new one from the still-valid Access identity. The
+# Access session duration you configure in Cloudflare Zero Trust is therefore what
+# actually bounds named-mode access.
 session_ttl = "12h"
 # Idle period after which the session locks. Must not exceed session_ttl.
+#
+# Effective in QUICK mode only. It does NOT re-lock a named-mode session: an
+# idle-expired named session is re-provisioned on the next request from the
+# unexpired Access identity, with no pairing step, so no re-authentication is
+# prompted. In named mode Cloudflare Access is the sole session-lifetime authority
+# - set the Access session duration there, and revoke the Access session (or run
+# `herdr-phone stop`) to actually end access.
 idle_lock = "30m"
 # Directory roots the remote directory picker is confined to. "~" and explicit
 # environment variables are expanded; each root must exist and resolve without
@@ -44,21 +59,38 @@ token_file = ""
 # token from the macOS login Keychain.
 token_command = ["security", "find-generic-password", "-s", "herdr-phone-tunnel", "-w"]
 # Quick Tunnels are ephemeral and unauthenticated at the edge; they must be opted
-# into explicitly and still require app pairing.
+# into explicitly, and the single-use pairing link stays mandatory there because it
+# is the only gate. Testing only.
 quick_enabled = false
 # Graceful shutdown grace period for cloudflared.
 grace_period = "15s"
 
 [auth.access]
-# Cloudflare Access is the edge identity layer for named mode.
+# Cloudflare Access is the identity layer for named mode, and its only interactive
+# gate: the origin re-validates this JWT on every request and WebSocket handshake,
+# and provisions the app session from the verified identity, so no pairing link is
+# needed in named mode. Keep the Access policy as tight as an SSH login.
 enabled = true
 # Your Access team domain (bare hostname, no scheme).
 team_domain = "example.cloudflareaccess.com"
 # The Access application audience (AUD) tag. Required when Access is enabled.
 audience = "0000000000000000000000000000000000000000000000000000000000000000"
-# Optional exact-match allowlist of verified email or common_name claims. Empty
-# means any identity Access lets through is accepted.
-allowed_identities = []
+# Exact-match allowlist of verified email or common_name claims, and the last
+# identity filter the origin applies. Named mode is Access-only - clearing Access
+# is enough to reach a shell-equivalent session, with no pairing link - so named
+# mode REQUIRES this to be non-empty (or the explicit opt-out below). Put your own
+# address here and nothing else unless you mean to share the relay.
+allowed_identities = ["you@example.com"]
+# Deliberate opt-out from the requirement above: accept every identity your
+# Cloudflare Access policy admits.
+#
+# WARNING: this hands your entire front door to that policy. A broad rule (any
+# @company.com address, "everyone" plus a login method, a service token) then
+# grants anyone it admits remote shell-equivalent access to this machine, with no
+# second factor - v0.3.0 removed pairing as one in named mode. Only set this to
+# true when the Access policy itself is as tight as an SSH login. A non-empty
+# allowed_identities is still enforced even when this is true.
+allow_any_identity = false
 # How long a fetched JWKS key set is cached.
 jwks_ttl = "1h"
 

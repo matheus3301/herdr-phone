@@ -29,6 +29,48 @@ import { WebSocketServer, type WebSocket } from "ws";
 
 const PAIR_SECRET = process.env.MOCK_PAIR_SECRET ?? "dev-pair-secret";
 const COOKIE = "hp_mock_session";
+const CSRF = "mock-csrf-token";
+
+/* --------------------------------------------------------------- relay mode */
+
+/**
+ * Which relay mode the mock emulates (SPEC §9.1, DELIVERY-v0.3.0 §3).
+ *
+ * QUICK (the default, and what the Playwright journeys drive): the single-use
+ * pairing secret is the only app gate — no cookie means 401 and `/pair` is the
+ * only way in.
+ *
+ * NAMED: Cloudflare Access is the gate. There is no Access edge in front of the
+ * mock, so clearing Access is modelled as "already cleared": a cookie-less request
+ * to a session route is transparently given a session and a `Set-Cookie`, exactly
+ * as `internal/server/routes.go` `provisionSession` does, and `identity.mode` is
+ * `"named"`. `/pair` stays live for re-binding, as it does in production.
+ *
+ * Opt in with `MOCK_RELAY_MODE=named` (dev/preview) or at runtime with
+ * `POST /api/v1/__mode {"mode":"named"}`. `__mode` also flips `access_denied`,
+ * which stands in for an expired/invalid Access token: every authenticated route
+ * then answers 401 `access denied`, the rejection the origin emits at middleware
+ * step 2 before it ever looks at the app session.
+ */
+type MockMode = "named" | "quick";
+const ENV_MODE: MockMode = process.env.MOCK_RELAY_MODE === "named" ? "named" : "quick";
+let mode: MockMode = ENV_MODE;
+let accessDenied = false;
+
+/** The Access subject a named-mode relay reports; quick mode has no identity. */
+const NAMED_SUBJECT = "operator@example.com";
+
+/** internal/server/pairing.go idJSON — the identity both /pair and /session emit. */
+function identity() {
+  return mode === "named"
+    ? { subject: NAMED_SUBJECT, display: NAMED_SUBJECT, quick: false, mode: "named" }
+    : { subject: "", display: "Quick Tunnel operator", quick: true, mode: "quick" };
+}
+
+/** internal/server/pairing.go pairResponse == sessionResponse. */
+function sessionPayload() {
+  return { csrf_token: CSRF, expires_unix_ms: Date.now() + 12 * 3600 * 1000, identity: identity() };
+}
 
 let clock = 1_780_000_000_000;
 const now = () => clock++;
@@ -356,8 +398,12 @@ function capabilities() {
       "worktree.create", "worktree.open", "worktree.remove", "worktree.remove_force",
     ],
     capabilities: { herdr_version: "0.7.5", herdr_protocol: 17, live_handoff: true, agent_kinds: ["claude", "codex", "opencode", "gemini", "cursor"] },
-    status: { version: "0.2.0", protocol: 17, mode: "quick", ready: true, herdr: { healthy: true }, state: { healthy: true }, clients: eventClients.size },
-    tunnel: { mode: "quick", public_url: "https://example.trycloudflare.com", health: { healthy: true, detail: "ready" } },
+    status: { version: "0.3.0", protocol: 17, mode, ready: true, herdr: { healthy: true }, state: { healthy: true }, clients: eventClients.size },
+    tunnel: {
+      mode,
+      public_url: mode === "named" ? "https://phone.example.com" : "https://example.trycloudflare.com",
+      health: { healthy: true, detail: "ready" },
+    },
     limits: {
       max_body_bytes: 1048576,
       max_pane_read_lines: 5000,
@@ -830,11 +876,40 @@ function readBody(req: IncomingMessage): Promise<Record<string, unknown>> {
     });
   });
 }
-function isPaired(req: IncomingMessage): boolean {
+function hasSessionCookie(req: IncomingMessage): boolean {
   return (req.headers.cookie ?? "").includes(`${COOKIE}=`);
 }
-function unauthorized(res: ServerResponse): boolean {
-  send(res, 401, { error: { code: "unauthorized", message: "pairing required", retryable: false } });
+
+/** internal/server/errors.go writeError, for the two 401s the middleware emits. */
+function unauthorized(res: ServerResponse, message: string): void {
+  send(res, 401, { error: { code: "unauthorized", message, retryable: false } });
+}
+
+/**
+ * The app-session gate, mirroring `internal/server/routes.go` `wrap` steps 2–3.
+ * Returns false when it has already answered the request.
+ *
+ * Named mode auto-provisions rather than sending the browser to `/pair`: step 2
+ * re-validated the Access JWT at the origin, so a cookie-less request still
+ * carries a verified edge identity. Quick mode has none, so it falls straight
+ * through to 401 and pairing stays the only way in.
+ */
+function authorize(req: IncomingMessage, res: ServerResponse): boolean {
+  if (mode === "named") {
+    if (accessDenied) {
+      unauthorized(res, "access denied");
+      return false;
+    }
+    if (!hasSessionCookie(req)) {
+      // Set before send(), which merges pre-set headers with its own.
+      res.setHeader("Set-Cookie", `${COOKIE}=1; Path=/; HttpOnly; SameSite=Strict`);
+    }
+    return true;
+  }
+  if (!hasSessionCookie(req)) {
+    unauthorized(res, "no valid session");
+    return false;
+  }
   return true;
 }
 
@@ -1020,7 +1095,20 @@ async function handleApi(req: IncomingMessage, res: ServerResponse, url: URL): P
     runContract.maxRuns = 200;
     runOutputPadding = 0;
     failNextRunRead = null;
-    send(res, 200, { ok: true });
+    // Back to the mode this server was started in, so one journey's mode switch
+    // cannot leak into the next.
+    mode = ENV_MODE;
+    accessDenied = false;
+    send(res, 200, { ok: true, mode });
+    return true;
+  }
+  if (path === "/__mode" && method === "POST") {
+    // Test-only: switch the emulated relay mode, and/or model an expired Access
+    // token in named mode (every authenticated route then 401s `access denied`).
+    const body = await readBody(req);
+    if (body.mode !== undefined) mode = body.mode === "named" ? "named" : "quick";
+    if (body.access_denied !== undefined) accessDenied = !!body.access_denied;
+    send(res, 200, { mode, access_denied: accessDenied });
     return true;
   }
   if (path === "/__run_contract" && method === "POST") {
@@ -1097,25 +1185,23 @@ async function handleApi(req: IncomingMessage, res: ServerResponse, url: URL): P
     return true;
   }
   if (path === "/pair" && method === "POST") {
+    // `/pair` stays live in both modes (it is how a named-mode operator re-binds),
+    // and in named mode it is still behind the Access check.
+    if (mode === "named" && accessDenied) {
+      unauthorized(res, "access denied");
+      return true;
+    }
     const body = await readBody(req);
     if (String(body.secret) !== PAIR_SECRET) {
       send(res, 401, { error: { code: "unauthorized", message: "pairing rejected", retryable: false } });
       return true;
     }
-    send(res, 200, {
-      csrf_token: "mock-csrf-token",
-      expires_unix_ms: Date.now() + 12 * 3600 * 1000,
-      identity: { subject: "", display: "Quick Tunnel operator", quick: true, mode: "quick" },
-    }, { "Set-Cookie": `${COOKIE}=1; Path=/; HttpOnly; SameSite=Strict` });
+    send(res, 200, sessionPayload(), { "Set-Cookie": `${COOKIE}=1; Path=/; HttpOnly; SameSite=Strict` });
     return true;
   }
   if (path === "/session" && method === "GET") {
-    if (!isPaired(req)) return unauthorized(res);
-    send(res, 200, {
-      csrf_token: "mock-csrf-token",
-      expires_unix_ms: Date.now() + 12 * 3600 * 1000,
-      identity: { subject: "", display: "Quick Tunnel operator", quick: true, mode: "quick" },
-    });
+    if (!authorize(req, res)) return true;
+    send(res, 200, sessionPayload());
     return true;
   }
   if (path === "/session" && method === "DELETE") {
@@ -1124,12 +1210,12 @@ async function handleApi(req: IncomingMessage, res: ServerResponse, url: URL): P
     return true;
   }
   if (path === "/capabilities" && method === "GET") {
-    if (!isPaired(req)) return unauthorized(res);
+    if (!authorize(req, res)) return true;
     send(res, 200, capabilities());
     return true;
   }
   if (path === "/snapshot" && method === "GET") {
-    if (!isPaired(req)) return unauthorized(res);
+    if (!authorize(req, res)) return true;
     if (outage) {
       send(res, 503, { error: { code: "unavailable", message: "relay outage", retryable: true } });
       return true;
@@ -1144,7 +1230,7 @@ async function handleApi(req: IncomingMessage, res: ServerResponse, url: URL): P
     return true;
   }
   if (path.startsWith("/panes/") && path.endsWith("/read") && method === "GET") {
-    if (!isPaired(req)) return unauthorized(res);
+    if (!authorize(req, res)) return true;
     const paneId = decodeURIComponent(path.slice("/panes/".length, -"/read".length));
     if (herd.generations[paneId] === undefined) {
       send(res, 404, { error: { code: "not_found", message: "pane not found", retryable: false } });
@@ -1160,7 +1246,7 @@ async function handleApi(req: IncomingMessage, res: ServerResponse, url: URL): P
     return true;
   }
   if (path === "/runs" && method === "GET") {
-    if (!isPaired(req)) return unauthorized(res);
+    if (!authorize(req, res)) return true;
     if (!runContract.supported) {
       // An older relay has no run routes at all.
       send(res, 404, { error: { code: "not_found", message: "unknown endpoint" } });
@@ -1183,7 +1269,7 @@ async function handleApi(req: IncomingMessage, res: ServerResponse, url: URL): P
     return true;
   }
   if (path.startsWith("/runs/") && method === "GET") {
-    if (!isPaired(req)) return unauthorized(res);
+    if (!authorize(req, res)) return true;
     if (!runContract.supported) {
       send(res, 404, { error: { code: "not_found", message: "unknown endpoint" } });
       return true;
@@ -1192,18 +1278,18 @@ async function handleApi(req: IncomingMessage, res: ServerResponse, url: URL): P
     return true;
   }
   if (path === "/directories" && method === "GET") {
-    if (!isPaired(req)) return unauthorized(res);
+    if (!authorize(req, res)) return true;
     const p = url.searchParams.get("path") ?? "/Users/dev/code";
     send(res, 200, { path: p, entries: [{ name: "space-api", path: `${p}/space-api` }, { name: "mobile-ui", path: `${p}/mobile-ui` }, { name: "infra", path: `${p}/infra` }] });
     return true;
   }
   if (path === "/confirmations" && method === "POST") {
-    if (!isPaired(req)) return unauthorized(res);
+    if (!authorize(req, res)) return true;
     handleConfirmations(res, await readBody(req));
     return true;
   }
   if (path === "/mutations" && method === "POST") {
-    if (!isPaired(req)) return unauthorized(res);
+    if (!authorize(req, res)) return true;
     const { status, payload } = applyMutation(await readBody(req));
     send(res, status, payload);
     return true;
@@ -1278,7 +1364,12 @@ terminalWss.on("connection", (ws, req) => {
 
 function handleUpgrade(req: IncomingMessage, socket: Duplex, head: Buffer) {
   const url = new URL(req.url ?? "", "http://localhost");
-  if (!isPaired(req)) {
+  // A WebSocket handshake is gated exactly like a request: named mode needs a
+  // valid edge identity (the session rides along, provisioned or paired), quick
+  // mode needs the paired cookie. No cookie can be set on an upgrade, so a
+  // named-mode socket relies on the SPA having read GET /session first — which it
+  // always does before opening /events.
+  if (mode === "named" ? accessDenied : !hasSessionCookie(req)) {
     socket.destroy();
     return;
   }

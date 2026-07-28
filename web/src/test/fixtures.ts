@@ -85,6 +85,20 @@ export function makeSessionResponse(overrides: Partial<WirePairResponse> = {}): 
 }
 
 /**
+ * GET /session in NAMED mode: the relay provisioned the session from the verified
+ * Access identity, so it carries a real subject and `mode: "named"` and no pairing
+ * ever happened (internal/server/pairing.go sessionResponse, DELIVERY §5).
+ */
+export function makeNamedSessionResponse(overrides: Partial<WirePairResponse> = {}): WirePairResponse {
+  return {
+    csrf_token: "csrf",
+    expires_unix_ms: Date.now() + 3600_000,
+    identity: { subject: "operator@example.com", display: "operator@example.com", quick: false, mode: "named" },
+    ...overrides,
+  };
+}
+
+/**
  * The run contract as a relay that ships it advertises: authoritative about
  * identity and status, explicitly false about every semantic capability.
  */
@@ -189,7 +203,7 @@ export function makeCapabilities(overrides: Partial<Capabilities> = {}): Capabil
     accessEnforced: false,
     herdrVersion: "0.7.5",
     herdrProtocol: 17,
-    phoneVersion: "0.2.0",
+    phoneVersion: "0.3.0",
     ready: true,
     clients: 1,
     tunnelPublicUrl: "https://example.trycloudflare.com",

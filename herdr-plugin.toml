@@ -1,6 +1,6 @@
 id = "matheus3301.phone"
 name = "Herdr Phone"
-version = "0.2.0"
+version = "0.3.0"
 min_herdr_version = "0.7.5"
 description = "Use your Mac's Herdr session from your phone, over a Cloudflare tunnel"
 platforms = ["macos"]
@@ -31,6 +31,14 @@ id = "stop"
 title = "Phone: Stop"
 contexts = ["global"]
 command = ["./bin/herdr-phone", "stop"]
+
+# The one-tap action to bind to a key: stops the relay when it is running and
+# starts it (named mode) when it is not.
+[[actions]]
+id = "toggle"
+title = "Phone: Toggle On/Off"
+contexts = ["global"]
+command = ["./bin/herdr-phone", "toggle"]
 
 [[actions]]
 id = "status"

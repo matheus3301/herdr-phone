@@ -10,6 +10,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"slices"
+	"strconv"
 	"strings"
 	"sync"
 	"testing"
@@ -30,6 +31,14 @@ type fakeAuth struct {
 	csrf       map[string]string
 	exp        time.Time
 	seq        int
+	// ensureErr makes EnsureSession fail (a fail-closed authenticator).
+	ensureErr error
+	// autoCookie is the cookie value of the live auto-provisioned session for the
+	// named-mode identity, so repeated cookie-less requests reuse it exactly as
+	// the real adapter's GetByIdentity does. autoCreated counts how many distinct
+	// auto sessions were minted.
+	autoCookie  string
+	autoCreated int
 }
 
 func newFakeAuth() *fakeAuth {
@@ -74,6 +83,63 @@ func (f *fakeAuth) Pair(_ *http.Request, secret string) (*Session, error) {
 		Identity:  id,
 		ExpiresAt: time.Now().Add(time.Hour),
 	}, nil
+}
+
+// autoSubject is the Access identity the fake binds auto-provisioned sessions to.
+const autoSubject = "access@example.com"
+
+// EnsureSession models the real adapter: quick mode never auto-provisions, named
+// mode fails closed on an unverifiable Access token, and an existing live session
+// for the same identity is reused rather than duplicated.
+func (f *fakeAuth) EnsureSession(*http.Request) (*Session, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if !f.named {
+		return nil, nil
+	}
+	if f.accessErr != nil {
+		return nil, f.accessErr
+	}
+	if f.ensureErr != nil {
+		return nil, f.ensureErr
+	}
+	if _, live := f.sessions[f.autoCookie]; !live {
+		f.autoCreated++
+		f.autoCookie = "auto-cookie-" + strconv.Itoa(f.autoCreated)
+		f.sessions[f.autoCookie] = Identity{
+			Subject:   autoSubject,
+			Display:   autoSubject,
+			SessionID: "auto-sid-" + strconv.Itoa(f.autoCreated),
+		}
+		f.csrf[f.autoCookie] = "auto-csrf-" + strconv.Itoa(f.autoCreated)
+	}
+	id := f.sessions[f.autoCookie]
+	id.CSRFToken = f.csrf[f.autoCookie]
+	id.ExpiresAt = f.exp
+	return &Session{
+		Cookie: &http.Cookie{
+			Name: f.CookieName(), Value: f.autoCookie, Path: "/", Expires: f.exp,
+			HttpOnly: true, Secure: true, SameSite: http.SameSiteStrictMode,
+		},
+		CSRFToken: id.CSRFToken,
+		Identity:  id,
+		ExpiresAt: f.exp,
+	}, nil
+}
+
+// autoSessionCount reports how many distinct auto-provisioned sessions the fake
+// minted, so a test can assert reuse instead of unbounded growth.
+func (f *fakeAuth) autoSessionCount() int {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return f.autoCreated
+}
+
+// sessionCount reports how many live sessions the fake holds.
+func (f *fakeAuth) sessionCount() int {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return len(f.sessions)
 }
 
 func (f *fakeAuth) Session(cookieValue string) (Identity, bool) {
@@ -387,6 +453,20 @@ func (a *fakeAuditor) events() []string {
 
 func (a *fakeAuditor) hasEvent(name string) bool {
 	return slices.Contains(a.events(), name)
+}
+
+// entriesFor returns every recorded entry for one event name, so a test can
+// assert on the exact fields persisted (and on what is absent from them).
+func (a *fakeAuditor) entriesFor(name string) []AuditEntry {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	var out []AuditEntry
+	for _, e := range a.entries {
+		if e.Event == name {
+			out = append(out, e)
+		}
+	}
+	return out
 }
 
 // ---- fake terminal launcher -----------------------------------------------

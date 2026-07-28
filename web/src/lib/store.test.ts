@@ -1,7 +1,8 @@
 import { describe, it, expect, vi, afterEach } from "vitest";
 import { AppStore } from "./store";
 import * as api from "./api";
-import { makePairResponse, makeSessionResponse } from "@/test/fixtures";
+import { recalledRelayMode } from "./relay-mode";
+import { makeNamedSessionResponse, makePairResponse, makeSessionResponse } from "@/test/fixtures";
 
 /** Minimal non-opening WebSocket stub so start() can run under jsdom. */
 class IdleWS {
@@ -41,13 +42,13 @@ class ControllableWS {
   send() {}
 }
 
-function stubCaps() {
+function stubCaps(mode: "named" | "quick" = "quick") {
   vi.spyOn(api, "getCapabilities").mockResolvedValue({
     version: 1,
     operations: [],
     capabilities: { herdr_version: "0.7.5", herdr_protocol: 17, live_handoff: true, agent_kinds: [] },
-    status: { version: "0.1.0", protocol: 17, mode: "quick", ready: true, herdr: { healthy: true }, state: { healthy: true }, clients: 1 },
-    tunnel: { mode: "quick", public_url: "", health: { healthy: true } },
+    status: { version: "0.1.0", protocol: 17, mode, ready: true, herdr: { healthy: true }, state: { healthy: true }, clients: 1 },
+    tunnel: { mode, public_url: "", health: { healthy: true } },
     limits: { max_body_bytes: 1, max_pane_read_lines: 1, confirmation_ttl_seconds: 30 },
   });
 }
@@ -139,6 +140,70 @@ describe("AppStore.start — cold reload session recovery", () => {
     } finally {
       vi.useRealTimers();
     }
+  });
+});
+
+describe("AppStore.start — named mode is Access-only, quick mode still pairs", () => {
+  afterEach(() => {
+    vi.unstubAllGlobals();
+    localStorage.clear();
+  });
+
+  it("named: reaches a mutable session from GET /session alone, with no pair call", async () => {
+    vi.stubGlobal("WebSocket", IdleWS as unknown as typeof WebSocket);
+    vi.stubGlobal("location", { protocol: "http:", host: "127.0.0.1:4173" } as unknown as Location);
+    const pair = vi.spyOn(api, "pair");
+    // The relay provisioned this session from the verified Access identity: no
+    // pairing secret was ever presented (internal/server/routes.go).
+    vi.spyOn(api, "getSession").mockResolvedValue(
+      makeNamedSessionResponse({ csrf_token: "access-provisioned-csrf" }),
+    );
+    stubCaps("named");
+
+    const s = new AppStore();
+    await s.start();
+
+    const st = s.getState();
+    expect(st.session?.mode).toBe("named");
+    expect(st.session?.quick).toBe(false);
+    expect(st.session?.operator).toBe("operator@example.com");
+    expect(st.session?.csrfToken).toBe("access-provisioned-csrf");
+    expect(st.readOnly).toBe(false);
+    expect(s.canMutate()).toBe(true);
+    expect(st.capabilities?.mode).toBe("named");
+    expect(st.capabilities?.accessEnforced).toBe(true);
+    expect(pair).not.toHaveBeenCalled();
+    // The mode is remembered so a later boot whose GET /session fails knows the
+    // remedy is Access, not pairing.
+    expect(recalledRelayMode()).toBe("named");
+    s.stop();
+  });
+
+  it("quick: no session means no mutations until pairing establishes one", async () => {
+    vi.stubGlobal("WebSocket", IdleWS as unknown as typeof WebSocket);
+    vi.stubGlobal("location", { protocol: "http:", host: "127.0.0.1:4173" } as unknown as Location);
+    const mutate = vi.spyOn(api, "mutate");
+    vi.spyOn(api, "getSession").mockRejectedValue(new api.ApiError(401, "unauthorized", "no valid session"));
+    vi.spyOn(api, "getSnapshot").mockRejectedValue(new api.ApiError(401, "unauthorized", "no valid session"));
+    stubCaps();
+
+    const s = new AppStore();
+    await s.start();
+
+    expect(s.getState().session).toBeNull();
+    expect(s.canMutate()).toBe(false);
+    const refused = await s.runMutation("pane.split", { pane_id: "w1:p1" }, { expectedGeneration: 3 });
+    expect("error" in refused && refused.error.code).toBe("reauth_required");
+    expect(mutate).not.toHaveBeenCalled();
+    // Nothing was learned about the mode, so the gate stays pairing.
+    expect(recalledRelayMode()).toBeNull();
+
+    // Pairing is what unlocks quick mode, exactly as before.
+    s.setSessionFromPair(makePairResponse({ csrf_token: "paired-csrf" }));
+    expect(s.canMutate()).toBe(true);
+    expect(s.getState().session?.mode).toBe("quick");
+    expect(recalledRelayMode()).toBe("quick");
+    s.stop();
   });
 });
 

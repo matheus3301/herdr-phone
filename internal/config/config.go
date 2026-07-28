@@ -111,7 +111,18 @@ type Access struct {
 	TeamDomain        string
 	Audience          string
 	AllowedIdentities []string
-	JWKSTTL           time.Duration
+	// AllowAnyIdentity waives the requirement that named mode carry a non-empty
+	// AllowedIdentities. Since named mode became Access-only, the allowlist is the
+	// last origin-side identity filter, so an empty one means every identity the
+	// Cloudflare Access policy admits reaches a shell-equivalent surface. That is a
+	// legitimate configuration only when the Access policy itself is the intended
+	// boundary, so it must be declared deliberately.
+	//
+	// It waives only the requirement, never the enforcement: a non-empty
+	// AllowedIdentities is still matched exactly by the verifier even when this is
+	// true, so the stricter of the two always wins.
+	AllowAnyIdentity bool
+	JWKSTTL          time.Duration
 }
 
 // Herdr holds Herdr connection and polling configuration.
@@ -147,7 +158,10 @@ func Default() Config {
 		},
 		Access: Access{
 			Enabled: true,
-			JWKSTTL: DefaultJWKSTTL,
+			// No implicit blanket allow: named mode must either name the identities
+			// that may reach the relay or declare allow_any_identity deliberately.
+			AllowAnyIdentity: false,
+			JWKSTTL:          DefaultJWKSTTL,
 		},
 		Herdr: Herdr{
 			PollHot:  DefaultPollHot,
@@ -296,6 +310,7 @@ type rawAccess struct {
 	TeamDomain        *string  `toml:"team_domain"`
 	Audience          *string  `toml:"audience"`
 	AllowedIdentities []string `toml:"allowed_identities"`
+	AllowAnyIdentity  *bool    `toml:"allow_any_identity"`
 	JWKSTTL           *string  `toml:"jwks_ttl"`
 }
 
@@ -373,6 +388,9 @@ func (r rawConfig) applyTo(cfg *Config) error {
 		applyString(a.Audience, &cfg.Access.Audience)
 		if a.AllowedIdentities != nil {
 			cfg.Access.AllowedIdentities = append([]string(nil), a.AllowedIdentities...)
+		}
+		if a.AllowAnyIdentity != nil {
+			cfg.Access.AllowAnyIdentity = *a.AllowAnyIdentity
 		}
 		if err := applyDuration(a.JWKSTTL, &cfg.Access.JWKSTTL, "auth.access.jwks_ttl"); err != nil {
 			return err
@@ -537,6 +555,14 @@ func (c Cloudflare) validateNamed(access Access) error {
 	if err := access.validate(); err != nil {
 		return err
 	}
+	// Named mode is Access-only: the Access JWT is the sole interactive gate, so
+	// allowed_identities is the last identity filter the origin applies. An empty
+	// one delegates the entire front door to the Access policy, which is only safe
+	// if that policy is itself as tight as an SSH login - so it has to be a
+	// deliberate declaration, never a default.
+	if err := access.validateIdentityGate(); err != nil {
+		return err
+	}
 	return nil
 }
 
@@ -577,6 +603,37 @@ func (a Access) validate() error {
 		}
 	}
 	return nil
+}
+
+// HasIdentityAllowlist reports whether an exact-match identity allowlist is
+// configured. When it is false in named mode, every identity the Cloudflare
+// Access policy admits is accepted by the origin.
+func (a Access) HasIdentityAllowlist() bool {
+	for _, id := range a.AllowedIdentities {
+		if strings.TrimSpace(id) != "" {
+			return true
+		}
+	}
+	return false
+}
+
+// validateIdentityGate enforces that named mode names the identities allowed to
+// reach the relay, unless the operator has deliberately opted out. It is called
+// only from validateNamed: quick mode has no edge identity at all, so the
+// single-use pairing secret remains its gate and this setting is irrelevant
+// there.
+func (a Access) validateIdentityGate() error {
+	if a.HasIdentityAllowlist() || a.AllowAnyIdentity {
+		return nil
+	}
+	return errors.New("named mode requires a non-empty auth.access.allowed_identities: " +
+		"Cloudflare Access is the only interactive gate in named mode, so this allowlist is the " +
+		"last identity filter the origin applies, and leaving it empty grants every identity your " +
+		"Access policy admits a shell-equivalent session. " +
+		`List the exact verified email or common_name allowed to reach this relay, e.g. ` +
+		`allowed_identities = ["you@example.com"], ` +
+		"or set auth.access.allow_any_identity = true to accept every identity your Access policy " +
+		"admits as a deliberate choice")
 }
 
 func (h Herdr) validate() error {

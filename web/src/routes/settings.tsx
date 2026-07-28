@@ -44,6 +44,9 @@ export function SettingsRoute() {
   const [ending, setEnding] = useState(false);
 
   const fidelity = detectRunFidelity(capabilities);
+  // Named mode's gate is the Cloudflare Access session, not a pairing link, so
+  // the copy has to name what the operator would actually have to revoke.
+  const named = session?.mode === "named";
 
   async function endSession() {
     setEnding(true);
@@ -148,13 +151,22 @@ export function SettingsRoute() {
       <Section title="About">
         <Row label="Herdr Phone" value={`v${__APP_VERSION__}`} />
         <p className="mt-2 max-w-prose text-meta text-muted-ink">
-          This grants remote shell-equivalent access to your Mac. Treat the pairing link like a login credential.
+          This grants remote shell-equivalent access to your Mac.{" "}
+          {named
+            ? "Treat your Cloudflare Access session like a login credential."
+            : "Treat the pairing link like a login credential."}
         </p>
       </Section>
 
       <Button variant="danger" className="mt-5 w-full" onClick={() => void endSession()} disabled={ending}>
-        <LogOut className="size-4" /> {ending ? "Ending…" : "End session"}
+        <LogOut className="size-4" />{" "}
+        {named ? (ending ? "Signing out…" : "Sign out this device") : ending ? "Ending…" : "End session"}
       </Button>
+      {named && (
+        <p className="mt-2 max-w-prose text-meta text-muted-ink">
+          Cloudflare Access signs you back in — revoke the Access session or run herdr-phone stop to end access
+        </p>
+      )}
     </div>
   );
 }

@@ -8,6 +8,7 @@
 import * as api from "./api";
 import { Backoff, onRevalidate } from "./reconnect";
 import { normalizeCapabilities, normalizeSnapshot, sessionFromResponse } from "./normalize";
+import { rememberRelayMode } from "./relay-mode";
 import type {
   Capabilities,
   ConfirmationRequest,
@@ -112,6 +113,7 @@ export class AppStore {
   /** Establish the session from a fresh pairing (carries the CSRF token). */
   setSessionFromPair(pair: WirePairResponse) {
     const session = sessionFromResponse(pair);
+    rememberRelayMode(session.mode);
     this.set({ session, readOnly: !session.csrfToken });
   }
 
@@ -129,6 +131,10 @@ export class AppStore {
       // existing paired session if we already have one this page load.
       const existing = this.state.session;
       const session = existing?.csrfToken ? existing : sessionFromResponse(sessionResp);
+      // The relay just stated which gate it enforces; remember it (non-secret) so a
+      // later boot whose GET /session fails can tell a named-mode Access problem
+      // from a quick-mode missing pairing (lib/relay-mode.ts).
+      rememberRelayMode(session.mode);
       this.set({
         session,
         capabilities: normalizeCapabilities(caps, PHONE_VERSION),

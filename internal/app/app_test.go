@@ -42,12 +42,15 @@ type fakeRuntime struct {
 	doctor      DoctorReport
 	doctorErr   error
 
+	startCalled bool
 	startOpts   StartOptions
 	serveCalled bool
 	serveOpts   ServeOptions
+	stopCalled  bool
 }
 
 func (f *fakeRuntime) Start(_ context.Context, _ config.Config, opts StartOptions) (StartResult, error) {
+	f.startCalled = true
 	f.startOpts = opts
 	return f.startResult, f.startErr
 }
@@ -57,6 +60,7 @@ func (f *fakeRuntime) Serve(_ context.Context, _ config.Config, opts ServeOption
 	return f.serveErr
 }
 func (f *fakeRuntime) Stop(_ context.Context, _ config.Config) (StopResult, error) {
+	f.stopCalled = true
 	return f.stopResult, f.stopErr
 }
 func (f *fakeRuntime) Status(_ context.Context, _ config.Config) (Status, error) {
@@ -114,6 +118,12 @@ func TestHelp(t *testing.T) {
 		if !strings.Contains(out.String(), "Usage:") {
 			t.Errorf("%s did not print usage", arg)
 		}
+		// Every dispatched command must be discoverable from help.
+		for _, cmd := range []string{ActionStart, ActionStop, ActionToggle, ActionStatus, ActionSetupLink, ActionDoctor} {
+			if !strings.Contains(out.String(), cmd) {
+				t.Errorf("%s usage omits command %q", arg, cmd)
+			}
+		}
 	}
 }
 
@@ -160,6 +170,134 @@ func TestStartPrintsResult(t *testing.T) {
 	}
 	if rt.startOpts.Quick || rt.startOpts.Foreground {
 		t.Errorf("unexpected opts: %+v", rt.startOpts)
+	}
+}
+
+// openLine returns the value of the single "Open on your phone:" line, or "" if
+// the output has none. It fails the test if more than one is printed.
+func openLine(t *testing.T, out string) string {
+	t.Helper()
+	const prefix = "Open on your phone: "
+	found := ""
+	for line := range strings.SplitSeq(out, "\n") {
+		if rest, ok := strings.CutPrefix(line, prefix); ok {
+			if found != "" {
+				t.Fatalf("multiple open-URL lines:\n%s", out)
+			}
+			found = rest
+		}
+	}
+	return found
+}
+
+// In named mode Cloudflare Access is the gate, so the open target is the bare
+// public URL — the operator never needs the pairing link.
+func TestStartOpenURLNamedIsPublicURL(t *testing.T) {
+	t.Parallel()
+	rt := &fakeRuntime{startResult: StartResult{
+		Mode:       "named",
+		PublicURL:  "https://phone.example.com",
+		PairingURL: "https://phone.example.com/#pair=abc",
+	}}
+	env, out, _ := newEnv(t, rt, "start")
+	if code := Main(env); code != exitOK {
+		t.Fatalf("exit = %d", code)
+	}
+	s := out.String()
+	if got := openLine(t, s); got != "https://phone.example.com" {
+		t.Errorf("open URL = %q, want the bare public URL\n%s", got, s)
+	}
+	if !strings.Contains(s, "Public URL: https://phone.example.com") {
+		t.Errorf("Public URL line missing:\n%s", s)
+	}
+	// A pairing link plays no part in signing in to a named-mode relay, so
+	// advertising one would only mislead: the line is withheld and the secret in it
+	// never reaches the terminal.
+	if strings.Contains(s, "Pairing:") || strings.Contains(s, "#pair=") {
+		t.Errorf("named mode must not print a Pairing line:\n%s", s)
+	}
+	if !strings.Contains(s, "no pairing link is needed") {
+		t.Errorf("named mode should say pairing is unnecessary:\n%s", s)
+	}
+}
+
+// Quick tunnels have no edge identity, so pairing is still the only way in and
+// the pairing link is the open target.
+func TestStartOpenURLQuickIsPairingURL(t *testing.T) {
+	t.Parallel()
+	rt := &fakeRuntime{startResult: StartResult{
+		Mode:       "quick",
+		PublicURL:  "https://x.trycloudflare.com",
+		PairingURL: "https://x.trycloudflare.com/#pair=abc",
+	}}
+	env, out, _ := newEnv(t, rt, "start")
+	if code := Main(env); code != exitOK {
+		t.Fatalf("exit = %d", code)
+	}
+	s := out.String()
+	if got := openLine(t, s); got != "https://x.trycloudflare.com/#pair=abc" {
+		t.Errorf("open URL = %q, want the pairing URL\n%s", got, s)
+	}
+	// Quick mode keeps both legacy lines; pairing is the only gate there.
+	if !strings.Contains(s, "Public URL: https://x.trycloudflare.com") ||
+		!strings.Contains(s, "Pairing:    https://x.trycloudflare.com/#pair=abc") {
+		t.Errorf("quick mode should print both URL lines:\n%s", s)
+	}
+	if !strings.Contains(s, "This pairing link works once") || !strings.Contains(s, "setup-link") {
+		t.Errorf("quick mode should mention how to get a new link:\n%s", s)
+	}
+	if strings.Contains(s, "Cloudflare Access") {
+		t.Errorf("quick mode has no Access edge to sign anyone in:\n%s", s)
+	}
+}
+
+// A quick tunnel whose pairing link could not be issued (the control-socket
+// rotate failed) is a dead end until one is: say so, and never claim Access
+// signs the operator in — a Quick Tunnel has no Access edge at all.
+func TestStartQuickWithoutPairingURLAsksForSetupLink(t *testing.T) {
+	t.Parallel()
+	rt := &fakeRuntime{startResult: StartResult{Mode: "quick", PublicURL: "https://x.trycloudflare.com"}}
+	env, out, _ := newEnv(t, rt, "start")
+	if code := Main(env); code != exitOK {
+		t.Fatalf("exit = %d", code)
+	}
+	s := out.String()
+	if got := openLine(t, s); got != "https://x.trycloudflare.com" {
+		t.Errorf("open URL = %q, want the public URL fallback\n%s", got, s)
+	}
+	if strings.Contains(s, "Cloudflare Access") || strings.Contains(s, "no pairing link is needed") {
+		t.Errorf("quick mode must never claim Access signs the operator in:\n%s", s)
+	}
+	if !strings.Contains(s, "needs a pairing link") || !strings.Contains(s, "setup-link") {
+		t.Errorf("quick mode without a link should point at setup-link:\n%s", s)
+	}
+	if strings.Contains(s, "Pairing:") {
+		t.Errorf("no pairing URL was issued, so no Pairing line:\n%s", s)
+	}
+}
+
+func TestStartOpenURLAlreadyRunning(t *testing.T) {
+	t.Parallel()
+	rt := &fakeRuntime{startResult: StartResult{Mode: "named", PublicURL: "https://phone.example.com", AlreadyRunning: true}}
+	env, out, _ := newEnv(t, rt, "start")
+	if code := Main(env); code != exitOK {
+		t.Fatalf("exit = %d", code)
+	}
+	if got := openLine(t, out.String()); got != "https://phone.example.com" {
+		t.Errorf("already-running start should still print the open URL, got %q\n%s", got, out.String())
+	}
+}
+
+// A mode with no usable URL must not print a dangling open line.
+func TestStartOpenURLOmittedWhenUnknown(t *testing.T) {
+	t.Parallel()
+	rt := &fakeRuntime{startResult: StartResult{Mode: "named"}}
+	env, out, _ := newEnv(t, rt, "start")
+	if code := Main(env); code != exitOK {
+		t.Fatalf("exit = %d", code)
+	}
+	if got := openLine(t, out.String()); got != "" {
+		t.Errorf("expected no open URL line, got %q", got)
 	}
 }
 
@@ -243,6 +381,121 @@ func TestStopNotRunning(t *testing.T) {
 	}
 	if !strings.Contains(out.String(), "was not running") {
 		t.Errorf("got %q", out.String())
+	}
+}
+
+func TestToggleStartsWhenStopped(t *testing.T) {
+	t.Parallel()
+	rt := &fakeRuntime{
+		status:      Status{Running: false},
+		startResult: StartResult{Mode: "named", PublicURL: "https://phone.example.com"},
+	}
+	env, out, _ := newEnv(t, rt, "toggle")
+	if code := Main(env); code != exitOK {
+		t.Fatalf("exit = %d", code)
+	}
+	if !rt.startCalled || rt.stopCalled {
+		t.Fatalf("toggle should start only: start=%v stop=%v", rt.startCalled, rt.stopCalled)
+	}
+	// Toggle defaults to named mode, never a Quick Tunnel.
+	if rt.startOpts.Quick || rt.startOpts.Foreground {
+		t.Errorf("toggle start opts = %+v, want zero", rt.startOpts)
+	}
+	s := out.String()
+	if !strings.Contains(s, "started in named mode") {
+		t.Errorf("toggle did not report the new state:\n%s", s)
+	}
+	if got := openLine(t, s); got != "https://phone.example.com" {
+		t.Errorf("toggle open URL = %q\n%s", got, s)
+	}
+}
+
+func TestToggleStartsQuickPrintsPairingURL(t *testing.T) {
+	t.Parallel()
+	rt := &fakeRuntime{
+		status: Status{Running: false},
+		// A quick-mode config makes the runtime report quick even though toggle
+		// never passes --quick.
+		startResult: StartResult{Mode: "quick", PublicURL: "https://x.trycloudflare.com", PairingURL: "https://x.trycloudflare.com/#pair=abc"},
+	}
+	env, out, _ := newEnv(t, rt, "toggle")
+	if code := Main(env); code != exitOK {
+		t.Fatalf("exit = %d", code)
+	}
+	if got := openLine(t, out.String()); got != "https://x.trycloudflare.com/#pair=abc" {
+		t.Errorf("toggle open URL = %q, want the pairing URL\n%s", got, out.String())
+	}
+}
+
+func TestToggleStopsWhenRunning(t *testing.T) {
+	t.Parallel()
+	rt := &fakeRuntime{
+		status:     Status{Running: true, Mode: "named", Health: "ready"},
+		stopResult: StopResult{WasRunning: true},
+	}
+	env, out, _ := newEnv(t, rt, "toggle")
+	if code := Main(env); code != exitOK {
+		t.Fatalf("exit = %d", code)
+	}
+	if !rt.stopCalled || rt.startCalled {
+		t.Fatalf("toggle should stop only: start=%v stop=%v", rt.startCalled, rt.stopCalled)
+	}
+	if !strings.Contains(out.String(), "now off") {
+		t.Errorf("toggle did not report the new state:\n%s", out.String())
+	}
+}
+
+// A running-but-degraded daemon still toggles off: "on" means a live process.
+func TestToggleStopsWhenDegraded(t *testing.T) {
+	t.Parallel()
+	rt := &fakeRuntime{
+		status:     Status{Running: true, Mode: "named", Health: "degraded"},
+		stopResult: StopResult{WasRunning: true},
+	}
+	env, _, _ := newEnv(t, rt, "toggle")
+	if code := Main(env); code != exitOK {
+		t.Fatalf("exit = %d", code)
+	}
+	if !rt.stopCalled || rt.startCalled {
+		t.Fatalf("degraded daemon should be stopped: start=%v stop=%v", rt.startCalled, rt.stopCalled)
+	}
+}
+
+// The daemon can exit between the status check and the stop; that is still "off".
+func TestToggleStopRaceReportsOff(t *testing.T) {
+	t.Parallel()
+	rt := &fakeRuntime{
+		status:     Status{Running: true},
+		stopResult: StopResult{WasRunning: false},
+	}
+	env, out, _ := newEnv(t, rt, "toggle")
+	if code := Main(env); code != exitOK {
+		t.Fatalf("exit = %d", code)
+	}
+	if !strings.Contains(out.String(), "now off") {
+		t.Errorf("got %q", out.String())
+	}
+}
+
+func TestToggleRejectsArgs(t *testing.T) {
+	t.Parallel()
+	env, _, errb := newEnv(t, &fakeRuntime{}, "toggle", "--quick")
+	if code := Main(env); code != exitUsage {
+		t.Fatalf("exit = %d, want %d", code, exitUsage)
+	}
+	if !strings.Contains(errb.String(), "takes no arguments") {
+		t.Errorf("stderr = %q", errb.String())
+	}
+}
+
+func TestToggleHelpFlag(t *testing.T) {
+	t.Parallel()
+	env, out, _ := newEnv(t, &fakeRuntime{}, "toggle", "-h")
+	if code := Main(env); code != exitOK {
+		t.Fatalf("exit = %d", code)
+	}
+	if !strings.Contains(out.String(), "Usage:") {
+		t.Error("expected usage for toggle -h")
 	}
 }
 
@@ -333,7 +586,7 @@ func TestDoctorFailingCheck(t *testing.T) {
 
 func TestRuntimeUnavailable(t *testing.T) {
 	t.Parallel()
-	for _, cmd := range [][]string{{"start"}, {"stop"}, {"status"}, {"setup-link"}} {
+	for _, cmd := range [][]string{{"start"}, {"stop"}, {"toggle"}, {"status"}, {"setup-link"}} {
 		env, _, errb := newEnv(t, nil, cmd...)
 		if code := Main(env); code != exitError {
 			t.Fatalf("%v exit = %d, want %d", cmd, code, exitError)

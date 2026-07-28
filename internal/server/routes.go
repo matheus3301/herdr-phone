@@ -126,6 +126,15 @@ func (s *Server) wrap(rt routeSpec) http.Handler {
 		rateKey := "u:" + rt.pattern + "|" + clientIP(r)
 		if rt.auth == authSession {
 			cv, id, ok := s.sessionFromRequest(r)
+			// Named mode is Access-gated: step 2 just re-validated the Cloudflare
+			// Access JWT at the origin, so a cookie-less request here still carries a
+			// cryptographically verified edge identity and is given an app session
+			// transparently instead of being sent to /pair (SPEC section 9.1). Quick
+			// mode has no edge identity, so it falls straight through to 401 and
+			// single-use pairing remains the only way in.
+			if !ok && s.deps.Auth.NamedMode() {
+				cv, id, ok = s.provisionSession(w, r)
+			}
 			if !ok {
 				writeError(w, http.StatusUnauthorized, codeUnauthorized, "no valid session")
 				return
@@ -184,6 +193,35 @@ func (s *Server) wrap(rt routeSpec) http.Handler {
 		}
 		rt.handler.ServeHTTP(w, r.WithContext(ctx))
 	})
+}
+
+// provisionSession asks the authenticator to mint (or reuse) an app session for
+// an Access-verified request that carried no valid session cookie, and sets the
+// resulting cookie on the response. It is only reached in named mode.
+//
+// The request continues through the rest of the pipeline unchanged: the Origin
+// allowlist, CrossOriginProtection, CSRF for mutating routes, the per-session
+// rate limit, and the deadline all apply to an auto-provisioned session exactly
+// as to a paired one. A brand-new session has not surfaced its CSRF token yet,
+// so a mutating request still fails CSRF until the SPA reads GET /session - the
+// same rule a paired session obeys before it learns its token.
+//
+// Anything other than a usable session leaves the request unauthenticated, so a
+// broken or fail-closed authenticator can only ever produce a 401.
+func (s *Server) provisionSession(w http.ResponseWriter, r *http.Request) (cookieValue string, ident Identity, ok bool) {
+	sess, err := s.deps.Auth.EnsureSession(r)
+	if err != nil || sess == nil || sess.Cookie == nil || sess.Cookie.Value == "" {
+		return "", Identity{}, false
+	}
+	http.SetCookie(w, sess.Cookie)
+	// Only the non-secret audit handle is recorded; the bearer cookie value never
+	// reaches the audit trail.
+	s.deps.Audit.Record(AuditEntry{
+		Event:     "session.auto",
+		Subject:   sess.Identity.Subject,
+		SessionID: sess.Identity.SessionID,
+	})
+	return sess.Cookie.Value, sess.Identity, true
 }
 
 // sessionFromRequest reads and validates the app session cookie.
