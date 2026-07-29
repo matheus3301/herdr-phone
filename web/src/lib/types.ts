@@ -228,6 +228,14 @@ export interface WireRunCapabilities {
   structured_tests: boolean;
   structured_plans: boolean;
   observed_terminal_output: boolean;
+  /**
+   * Experimental heuristic interpretation (SPEC §12.2). Deliberately *not* part
+   * of the `structured_*` family: those mean the relay holds authoritative
+   * semantic data, this means the relay pattern-matched a third-party TUI's
+   * screen. It never upgrades run fidelity.
+   */
+  heuristic_interpretation?: boolean;
+  interpretation_parsers?: string[];
   part_types: string[];
   output_sources: string[];
   max_output_bytes: number;
@@ -293,11 +301,76 @@ export interface WireObservedOutputPart {
   text: string;
 }
 
+/**
+ * The experimental interpreted parts (SPEC §12.2).
+ *
+ * `experimental` is always true on the wire so a single response is
+ * self-describing. `kind`, `interaction`, and `op` are open sets: an unknown value
+ * is ignored, never guessed at.
+ */
+export interface WireInterpretedTurn {
+  kind: string;
+  tool?: string;
+  text: string;
+}
+
+export interface WireInterpretedTranscriptPart {
+  type: string;
+  parser: string;
+  experimental: boolean;
+  turns: WireInterpretedTurn[];
+  dropped_turns: number;
+  dropped_lines: number;
+  /** True when the first turn began above the top of the bounded read. */
+  starts_mid_turn?: boolean;
+}
+
+export interface WireInterpretedOption {
+  label: string;
+  /**
+   * The literal key that answers with this option. Synthesized by the relay from
+   * the parsed ordinal and absent whenever the option cannot be answered
+   * remotely — which is always the case for OpenCode's selection row.
+   */
+  send_key?: string;
+}
+
+export interface WireInterpretedDiffLine {
+  line?: number;
+  op: string;
+  text: string;
+}
+
+export interface WireInterpretedInteractionPart {
+  type: string;
+  parser: string;
+  experimental: boolean;
+  interaction: string;
+  title?: string;
+  detail?: string[];
+  question?: string;
+  /** True only when every option carries a send key. Gate actions on this. */
+  answerable: boolean;
+  options?: WireInterpretedOption[];
+  diff?: WireInterpretedDiffLine[];
+}
+
+/**
+ * A run response's parts are a heterogeneous typed list. Every element carries a
+ * `type`, which is how a client dispatches; anything unrecognized is counted and
+ * ignored.
+ */
+export type WireRunPart =
+  | WireObservedOutputPart
+  | WireInterpretedTranscriptPart
+  | WireInterpretedInteractionPart
+  | { type: string };
+
 export interface WireRunResponse {
   contract_version: number;
   capabilities: WireRunCapabilities;
   run: WireRunSummary;
-  parts: WireObservedOutputPart[];
+  parts: WireRunPart[];
 }
 
 export interface WireIdentity {
@@ -455,6 +528,13 @@ export interface RunContract {
   structuredTests: boolean;
   structuredPlans: boolean;
   observedTerminalOutput: boolean;
+  /**
+   * Experimental heuristic interpretation (SPEC §12.2). Gating the chat view on
+   * this is what keeps §12.1's rule intact: the UI still renders only what the
+   * relay advertised, and the relay is explicit that this reading is a guess.
+   */
+  heuristicInterpretation: boolean;
+  interpretationParsers: string[];
   partTypes: string[];
   outputSources: string[];
   maxOutputBytes: number;

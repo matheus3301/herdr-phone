@@ -249,7 +249,7 @@ func buildStack(serveCtx context.Context, cancel context.CancelFunc, rt *Runtime
 		stateFn: func() server.ComponentHealth { return stateHealth(engine) },
 	}
 
-	srv, err := server.New(serverConfig(mode, publicURL, cfg.Server.Port), server.Deps{
+	srv, err := server.New(serverConfig(mode, publicURL, cfg.Server.Port, cfg.Experimental), server.Deps{
 		Auth:                  authAd,
 		State:                 stateAd,
 		Mutator:               &mutatorAdapter{client: client, kinds: kinds},

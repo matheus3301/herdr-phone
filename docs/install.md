@@ -202,7 +202,6 @@ to the operator to open on their phone:
 ```text
 herdr-phone started in named mode.
 Public URL: https://your-hostname
-Pairing:    https://your-hostname/#pair=...
 
 Open on your phone: https://your-hostname
 Cloudflare Access signs you in; no pairing link is needed.
@@ -226,17 +225,21 @@ The daemon does not start at login. Starting it is always an explicit action.
 ## 5. Optional: bind a key to toggle it on and off
 
 `matheus3301.phone.toggle` stops the relay when it is running and starts it (named
-mode) when it is not. Bind it in the operator's Herdr keymap only if they ask:
+mode) when it is not. Binding it to a key makes daily use a single keystroke from
+anywhere in Herdr — no terminal and no `herdr-phone` CLI needed. Bind it in the
+operator's Herdr keymap (`~/.config/herdr/config.toml`) only if they ask:
 
 ```toml
 [[keys.command]]
 key = "prefix+p"
 type = "plugin_action"
 command = "matheus3301.phone.toggle"
+description = "Phone: toggle on/off"
 ```
 
-Confirm the binding's key does not collide with an existing one before writing it,
-and report the file you changed.
+Herdr loads keybindings on config reload (restart Herdr if it does not take effect
+immediately). Confirm the binding's key does not collide with an existing one before
+writing it, and report the file you changed.
 
 ## Troubleshooting
 

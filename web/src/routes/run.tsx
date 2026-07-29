@@ -18,10 +18,13 @@ import {
   DropdownMenuSeparator,
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
+import { AgentChat } from "@/components/agent-chat";
+import { InteractionCard } from "@/components/interaction-card";
 import { useAppState } from "@/hooks/use-app-store";
 import { useMutations } from "@/hooks/use-mutations";
 import { useNow } from "@/hooks/use-now";
-import { useRunAdapter, useRunList, useRunState } from "@/hooks/use-runs";
+import { useRunAdapter, useRunList, useRunOutput, useRunState } from "@/hooks/use-runs";
+import { EMPTY_INTERPRETATION } from "@/lib/interpreted";
 import { useRouteTitle } from "@/hooks/use-route-title";
 import { useVisualViewport } from "@/hooks/use-visual-viewport";
 import { classifySend } from "@/lib/run-adapter";
@@ -218,6 +221,21 @@ function RunDetail({ run, onInvalidated }: { run: Run; onInvalidated: () => void
   const vp = useVisualViewport();
   const now = useNow(15_000);
 
+  // One read feeds both the experimental chat and the raw tail, so the two can
+  // never disagree about what the pane rendered.
+  const outputView = useRunOutput(run);
+  const output = outputView.result?.kind === "ok" ? outputView.result.output : null;
+  const invalidated = outputView.result?.kind === "error" && outputView.result.invalidates;
+  useEffect(() => {
+    if (invalidated) onInvalidated();
+  }, [invalidated, onInvalidated]);
+
+  // Gated on the advertised capability, never on the presence of a part.
+  const interpretation = adapter.supportsInterpretation ? (output?.interpretation ?? EMPTY_INTERPRETATION) : EMPTY_INTERPRETATION;
+  const transcript = interpretation.transcript;
+  const interaction = interpretation.interaction;
+  const chatting = transcript !== null || interaction !== null;
+
   const scroller = useRef<HTMLDivElement | null>(null);
   const [atBottom, setAtBottom] = useState(true);
 
@@ -259,7 +277,7 @@ function RunDetail({ run, onInvalidated }: { run: Run; onInvalidated: () => void
     if (!atBottom) return;
     const node = scroller.current;
     if (node) node.scrollTop = node.scrollHeight;
-  }, [atBottom, state.instructions, state.observed]);
+  }, [atBottom, state.instructions, state.observed, transcript]);
 
   const onScroll = () => {
     const node = scroller.current;
@@ -337,15 +355,28 @@ function RunDetail({ run, onInvalidated }: { run: Run; onInvalidated: () => void
               </section>
             )}
 
+            {/* The interpreted prompt leads: if the agent is waiting on someone, that
+                is the most important thing on the screen. */}
+            {interaction && <InteractionCard run={run} interaction={interaction} />}
+
+            {transcript && (
+              <AgentChat transcript={transcript} unknownTurnKinds={interpretation.unknownTurnKinds} />
+            )}
+
+            {/* With a chat present this becomes a secondary record of transitions
+                rather than the only account of activity, so it collapses to a
+                quieter presentation instead of claiming the page's attention. */}
             <section aria-labelledby="observed-heading" role="log" aria-live="polite" aria-relevant="additions">
               <h2 id="observed-heading" className="text-body font-semibold text-mist">
-                Observed activity
+                {chatting ? "Status changes seen here" : "Observed activity"}
               </h2>
-              <p className="mb-2 mt-1 max-w-prose text-meta text-muted-ink">
-                {adapter.supportsMessages
-                  ? "Reported by the relay."
-                  : "Herdr publishes no agent messages, so this is the status changes this phone saw while it was connected."}
-              </p>
+              {!chatting && (
+                <p className="mb-2 mt-1 max-w-prose text-meta text-muted-ink">
+                  {adapter.supportsMessages
+                    ? "Reported by the relay."
+                    : "Herdr publishes no agent messages, so this is the status changes this phone saw while it was connected."}
+                </p>
+              )}
               {state.observed.length > 0 ? (
                 <Runline events={state.observed} now={now} />
               ) : (
@@ -353,7 +384,7 @@ function RunDetail({ run, onInvalidated }: { run: Run; onInvalidated: () => void
               )}
             </section>
 
-            <TerminalTail run={run} now={now} onInvalidated={onInvalidated} />
+            <TerminalTail run={run} now={now} view={outputView} secondary={chatting} />
           </div>
         </div>
 

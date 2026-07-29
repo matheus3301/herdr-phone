@@ -23,6 +23,13 @@
 import * as api from "./api";
 import { ApiError } from "./api";
 import { RUN_CONTRACT_VERSION } from "./normalize";
+import {
+  EMPTY_INTERPRETATION,
+  PART_INTERPRETED_INTERACTION,
+  PART_INTERPRETED_TRANSCRIPT,
+  readInterpretation,
+  type Interpretation,
+} from "./interpreted";
 import type { Capabilities, MutationResponse, ReadSource, RunContract, WireRunSummary } from "./types";
 import type { RunKey } from "./run";
 
@@ -55,6 +62,12 @@ export interface ObservedOutput {
   readAt: number;
   /** Contract part types present in the response that this build cannot render. */
   ignoredPartTypes: string[];
+  /**
+   * The experimental heuristic reading of the same text (SPEC §12.2), or the empty
+   * interpretation when the relay does not advertise the feature. It sits beside
+   * the raw text rather than replacing it: the tail is the fallback, always.
+   */
+  interpretation: Interpretation;
 }
 
 /**
@@ -109,6 +122,15 @@ export interface RunAdapter {
   supportsObservedOutput: boolean;
   /** True when validated logical keys can be delivered without a console. */
   supportsKeys: boolean;
+  /**
+   * True when the relay advertises experimental heuristic interpretation, which is
+   * what allows the run view to render as a chat (SPEC §12.2).
+   *
+   * This is intentionally separate from `fidelity`: interpretation is a guess about
+   * a third-party TUI, never a fidelity upgrade, so it must never be able to make
+   * `supportsMessages` true or turn `observed` into `structured`.
+   */
+  supportsInterpretation: boolean;
   /** The advertised contract, or null in fallback mode. */
   contract: RunContract | null;
   /** Line bound to request: the UI default, clamped to what the relay allows. */
@@ -152,6 +174,9 @@ export function createRunAdapter(capabilities: Capabilities | null): RunAdapter 
     usesRunContract,
     supportsObservedOutput: usesRunContract ? !!contract?.observedTerminalOutput : true,
     supportsKeys: ops.has("agent.send_keys"),
+    // Only the structured contract can carry interpreted parts. The fallback
+    // reads a bare `pane.read`, which has no part list at all.
+    supportsInterpretation: usesRunContract && !!contract?.heuristicInterpretation,
     contract,
     outputLines,
     readRunOutput: (run, signal) => {
@@ -166,7 +191,7 @@ export function createRunAdapter(capabilities: Capabilities | null): RunAdapter 
         });
       }
       return usesRunContract
-        ? readFromContract(run, source, outputLines, contract, signal)
+        ? readFromContract(run, source, outputLines, contract, !!contract?.heuristicInterpretation, signal)
         : readFromPane(run, outputLines, signal);
     },
   };
@@ -182,6 +207,7 @@ async function readFromContract(
   source: ReadSource,
   lines: number,
   contract: RunContract | null,
+  interpretationEnabled: boolean,
   signal?: AbortSignal,
 ): Promise<RunOutputResult> {
   if (contract && !contract.observedTerminalOutput) {
@@ -195,13 +221,25 @@ async function readFromContract(
       signal,
     });
     const parts = res.parts ?? [];
-    // Exactly the one part type this build understands is rendered. Anything
-    // else is counted and ignored: a client must never interpret a part as a
-    // message unless its type says so.
-    const observed = parts.find((p) => p.type === PART_OBSERVED_TERMINAL_OUTPUT) ?? null;
-    const ignoredPartTypes = [
-      ...new Set(parts.filter((p) => p.type !== PART_OBSERVED_TERMINAL_OUTPUT).map((p) => p.type)),
-    ];
+    // Only part types this build understands are rendered. Anything else is
+    // counted and ignored: a client must never interpret a part as a message
+    // unless its type says so.
+    const observed =
+      (parts.find((p) => p.type === PART_OBSERVED_TERMINAL_OUTPUT) as
+        | { source: string; lines: number; bytes: number; truncated: boolean; text: string }
+        | undefined) ?? null;
+
+    // The interpreted parts are gated on the advertised capability, not on their
+    // presence, so an unadvertised part stays unrendered — and is then reported as
+    // ignored below, exactly like any other unknown type.
+    const interpretation = readInterpretation(parts, interpretationEnabled);
+    const rendered = new Set<string>([PART_OBSERVED_TERMINAL_OUTPUT]);
+    if (interpretationEnabled) {
+      rendered.add(PART_INTERPRETED_TRANSCRIPT);
+      rendered.add(PART_INTERPRETED_INTERACTION);
+    }
+    const ignoredPartTypes = [...new Set(parts.filter((p) => !rendered.has(p.type)).map((p) => p.type))];
+
     return {
       kind: "ok",
       run: res.run ?? null,
@@ -215,6 +253,7 @@ async function readFromContract(
         text: observed?.text ?? "",
         readAt: Date.now(),
         ignoredPartTypes,
+        interpretation,
       },
     };
   } catch (err) {
@@ -242,6 +281,9 @@ async function readFromPane(run: RunKey, lines: number, signal?: AbortSignal): P
         text: res.content,
         readAt: Date.now(),
         ignoredPartTypes: [],
+        // The fallback route returns bare content with no parts, so there is
+        // nothing to interpret and nothing is invented.
+        interpretation: EMPTY_INTERPRETATION,
       },
     };
   } catch (err) {

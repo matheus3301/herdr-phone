@@ -1,10 +1,11 @@
-import { useEffect } from "react";
+import { useEffect, useRef, useState } from "react";
 import { Link } from "react-router-dom";
 import { RefreshCw, SquareTerminal } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Collapsible, CollapsibleContent, CollapsibleTrigger } from "@/components/ui/collapsible";
 import { Skeleton } from "@/components/ui/skeleton";
-import { useRunAdapter, useRunOutput } from "@/hooks/use-runs";
+import { useRunAdapter } from "@/hooks/use-runs";
+import type { RunOutputView } from "@/hooks/use-runs";
 import { relativeTime, sanitizeBlock } from "@/lib/format";
 import type { Run } from "@/lib/run";
 
@@ -27,27 +28,48 @@ import type { Run } from "@/lib/run";
  * Content is rendered as text into a `<pre>` (never innerHTML) with C0/C1
  * controls stripped, and it is fetched with `no-store` — nothing here is cached
  * by the service worker or written to storage.
+ *
+ * The read itself is owned by the run route and passed in, so the raw tail and the
+ * experimental chat (SPEC §12.2) render from **one** response rather than racing
+ * two reads of the same pane against each other.
  */
 export function TerminalTail({
   run,
   now,
-  onInvalidated,
+  view,
+  secondary = false,
 }: {
   run: Run;
   now: number;
-  /** Called when the relay reports the run's own identity is no longer valid. */
-  onInvalidated?: () => void;
+  view: RunOutputView;
+  /**
+   * True when an interpreted chat is rendered above this. The tail then becomes
+   * the backstop rather than the main event: collapsed by default and named for
+   * what it is. It is never removed, because it is the only faithful thing on the
+   * page and the chat's whole justification is that you can check it.
+   */
+  secondary?: boolean;
 }) {
   const adapter = useRunAdapter();
-  const { result, loading, reload } = useRunOutput(run);
+  const { result, loading, reload } = view;
 
   const failed = result?.kind === "error" ? result : null;
   const output = result?.kind === "ok" ? result.output : null;
-  const invalidated = !!failed?.invalidates;
 
+  // Controlled rather than `defaultOpen`, because whether a chat exists is not
+  // known at mount: the first render happens while the read is still in flight, so
+  // `secondary` is false then and flips once the response lands. `defaultOpen` is
+  // only read once, which left the raw tail expanded underneath the chat. The
+  // sync fires only on an actual change, so an operator's own toggle survives a
+  // refresh.
+  const [open, setOpen] = useState(!secondary);
+  const lastSecondary = useRef(secondary);
   useEffect(() => {
-    if (invalidated) onInvalidated?.();
-  }, [invalidated, onInvalidated]);
+    if (lastSecondary.current !== secondary) {
+      lastSecondary.current = secondary;
+      setOpen(!secondary);
+    }
+  }, [secondary]);
 
   const text = output ? sanitizeBlock(output.text).trimEnd() : "";
   const lineWord = output?.lines === 1 ? "line" : "lines";
@@ -62,11 +84,11 @@ export function TerminalTail({
       aria-live="off"
       className="rounded-log bg-hull"
     >
-      <Collapsible defaultOpen>
+      <Collapsible open={open} onOpenChange={setOpen}>
         <div className="flex items-center gap-2 px-3 py-2">
           <CollapsibleTrigger className="min-h-11 flex-1">
             <span id="recent-output-heading" className="text-body font-semibold text-mist">
-              Recent terminal output
+              {secondary ? "Raw terminal output" : "Recent terminal output"}
             </span>
           </CollapsibleTrigger>
           <Button variant="quiet" size="icon" aria-label="Refresh recent output" onClick={reload}>

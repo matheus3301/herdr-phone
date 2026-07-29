@@ -17,6 +17,19 @@ type upstreamErr struct{ code string }
 func (e upstreamErr) Error() string        { return "upstream: " + e.code }
 func (e upstreamErr) UpstreamCode() string { return e.code }
 
+// decodedRunResponse decodes a run response for assertions.
+//
+// The production runResponse carries Parts as []any because the contract is a
+// heterogeneous typed-part list (SPEC §12.1/§12.2). Tests that only care about the
+// always-present observed-output part decode into this typed shape instead; the
+// interpreted-part tests decode into their own shapes.
+type decodedRunResponse struct {
+	ContractVersion int                  `json:"contract_version"`
+	Capabilities    runCapabilities      `json:"capabilities"`
+	Run             RunSummary           `json:"run"`
+	Parts           []observedOutputPart `json:"parts"`
+}
+
 // ---- wire contract --------------------------------------------------------
 
 // The run inbox wire shape is a contract the browser fails closed against, so it
@@ -170,7 +183,7 @@ func TestRunOutputReportsReturnedLinesNotTheRequest(t *testing.T) {
 	h := newHarness(t)
 	h.state.setContent("pane-1", []byte("one\ntwo\nthree\n"))
 	resp := h.authedGET(apiPrefix + "/runs/pane-1?expected_generation=7&lines=200")
-	var got runResponse
+	var got decodedRunResponse
 	decodeBody(t, resp, &got)
 	if got.Parts[0].Lines != 3 {
 		t.Fatalf("lines = %d, want 3", got.Parts[0].Lines)
@@ -362,7 +375,7 @@ func TestRunOutputByteBoundKeepsTail(t *testing.T) {
 	h.state.setContent("pane-1", []byte(strings.Repeat("a", 100)+"TAILMARKER"))
 
 	resp := h.authedGET(apiPrefix + "/runs/pane-1?expected_generation=7")
-	var got runResponse
+	var got decodedRunResponse
 	decodeBody(t, resp, &got)
 	p := got.Parts[0]
 	if !p.Truncated {
@@ -383,7 +396,7 @@ func TestRunOutputLinesClamped(t *testing.T) {
 	t.Parallel()
 	h := newHarness(t, withConfig(func(c *Config) { c.MaxRunOutputLines = 50 }))
 	resp := h.authedGET(apiPrefix + "/runs/pane-1?expected_generation=7&lines=100000")
-	var got runResponse
+	var got decodedRunResponse
 	decodeBody(t, resp, &got)
 	if resp.StatusCode != http.StatusOK {
 		t.Fatalf("status = %d", resp.StatusCode)
@@ -479,7 +492,7 @@ func TestObservedOutputStripsControlsKeepsLines(t *testing.T) {
 	h := newHarness(t)
 	h.state.setContent("pane-1", []byte("line one\n\x1b[2Kline two\r\ttabbed\x07\n"))
 	resp := h.authedGET(apiPrefix + "/runs/pane-1?expected_generation=7")
-	var got runResponse
+	var got decodedRunResponse
 	decodeBody(t, resp, &got)
 	text := got.Parts[0].Text
 	if strings.ContainsAny(text, "\x1b\x07\r") {

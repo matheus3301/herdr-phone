@@ -39,7 +39,7 @@ func TestEffectiveMode(t *testing.T) {
 
 func TestServerConfigNamed(t *testing.T) {
 	t.Parallel()
-	c := serverConfig(config.ModeNamed, "https://phone.example.com", 8787)
+	c := serverConfig(config.ModeNamed, "https://phone.example.com", 8787, config.Experimental{})
 	if c.PublicHost != "phone.example.com" {
 		t.Errorf("PublicHost = %q", c.PublicHost)
 	}
@@ -56,7 +56,7 @@ func TestServerConfigNamed(t *testing.T) {
 
 func TestServerConfigQuick(t *testing.T) {
 	t.Parallel()
-	c := serverConfig(config.ModeQuick, "https://abc.trycloudflare.com", 9000)
+	c := serverConfig(config.ModeQuick, "https://abc.trycloudflare.com", 9000, config.Experimental{})
 	if c.PublicHost != "abc.trycloudflare.com" || !c.Quick {
 		t.Errorf("quick server config = %+v", c)
 	}

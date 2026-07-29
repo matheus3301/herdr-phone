@@ -113,6 +113,10 @@ export function makeRunContract(overrides: Partial<RunContract> = {}): RunContra
     structuredTests: false,
     structuredPlans: false,
     observedTerminalOutput: true,
+    // Off by default, matching the relay: a fixture must not silently enable an
+    // experimental feature for every test that touches the contract.
+    heuristicInterpretation: false,
+    interpretationParsers: [],
     partTypes: ["observed_terminal_output"],
     outputSources: ["recent", "recent-unwrapped", "visible"],
     maxOutputBytes: 65536,
@@ -120,6 +124,19 @@ export function makeRunContract(overrides: Partial<RunContract> = {}): RunContra
     maxRuns: 200,
     ...overrides,
   };
+}
+
+/**
+ * The run contract with experimental interpretation advertised (SPEC §12.2), for
+ * tests that exercise the chat view.
+ */
+export function makeInterpretingRunContract(overrides: Partial<RunContract> = {}): RunContract {
+  return makeRunContract({
+    heuristicInterpretation: true,
+    interpretationParsers: ["claude", "opencode"],
+    partTypes: ["observed_terminal_output", "interpreted_transcript", "interpreted_interaction"],
+    ...overrides,
+  });
 }
 
 /** The same document on the wire (internal/server/runs.go runCapabilities). */
@@ -134,6 +151,7 @@ export function makeWireRunCapabilities(overrides: Partial<WireRunCapabilities> 
     structured_tests: false,
     structured_plans: false,
     observed_terminal_output: true,
+    heuristic_interpretation: false,
     part_types: ["observed_terminal_output"],
     output_sources: ["recent", "recent-unwrapped", "visible"],
     max_output_bytes: 65536,
@@ -141,6 +159,18 @@ export function makeWireRunCapabilities(overrides: Partial<WireRunCapabilities> 
     max_runs: 200,
     ...overrides,
   };
+}
+
+/** The wire capability document with experimental interpretation advertised. */
+export function makeInterpretingWireRunCapabilities(
+  overrides: Partial<WireRunCapabilities> = {},
+): WireRunCapabilities {
+  return makeWireRunCapabilities({
+    heuristic_interpretation: true,
+    interpretation_parsers: ["claude", "opencode"],
+    part_types: ["observed_terminal_output", "interpreted_transcript", "interpreted_interaction"],
+    ...overrides,
+  });
 }
 
 /** One structured run, matching the fields internal/server/runs.go emits. */
@@ -203,7 +233,7 @@ export function makeCapabilities(overrides: Partial<Capabilities> = {}): Capabil
     accessEnforced: false,
     herdrVersion: "0.7.5",
     herdrProtocol: 17,
-    phoneVersion: "0.3.0",
+    phoneVersion: "0.4.0",
     ready: true,
     clients: 1,
     tunnelPublicUrl: "https://example.trycloudflare.com",

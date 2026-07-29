@@ -8,6 +8,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/matheus3301/herdr-phone/internal/interpret"
 	"github.com/matheus3301/herdr-phone/internal/terminal"
 )
 
@@ -43,8 +44,35 @@ type Config struct {
 	MaxRunOutputBytes int
 	MaxRuns           int
 
+	// Interpretation is the experimental heuristic-parsing configuration
+	// (SPEC §12.2). The zero value is off, so a Server built without setting it
+	// behaves exactly as a build without the feature.
+	Interpretation Interpretation
+
 	// Terminal tunables passed through to each terminal bridge.
 	Terminal terminal.Options
+}
+
+// Interpretation configures experimental heuristic interpretation of agent
+// terminal text. It is a narrow projection of config.Experimental rather than the
+// whole thing, so the server cannot come to depend on unrelated config.
+type Interpretation struct {
+	// Enabled gates every part of the feature. While false, no parser runs and no
+	// capability or part type is advertised.
+	Enabled bool
+	// Parsers is the set of agent kinds whose grammar may be parsed.
+	Parsers []string
+	// MaxTurns bounds the published transcript.
+	MaxTurns int
+}
+
+// parses reports whether interpretation is enabled for one agent kind. A pane
+// running any other agent is never parsed.
+func (i Interpretation) parses(agentKind string) bool {
+	if !i.Enabled || agentKind == "" {
+		return false
+	}
+	return slices.Contains(i.Parsers, agentKind)
 }
 
 func (c *Config) applyDefaults() {
@@ -83,6 +111,9 @@ func (c *Config) applyDefaults() {
 	}
 	if c.MaxRuns <= 0 {
 		c.MaxRuns = 200
+	}
+	if c.Interpretation.MaxTurns <= 0 {
+		c.Interpretation.MaxTurns = interpret.DefaultLimits().MaxTurns
 	}
 }
 

@@ -51,6 +51,20 @@ export async function openWorkspace(page: Page, label: string) {
   await expect(page.getByRole("heading", { level: 1, name: label })).toBeVisible();
 }
 
+/**
+ * Emulate `[experimental] agent_output_parsing` (SPEC §12.2).
+ *
+ * Off by default, as in config, so every other journey exercises the default
+ * contract. Call this before navigating: the capability document is read when the
+ * app boots, and the chat is gated on it.
+ */
+export async function setInterpretation(
+  page: Page,
+  body: { enabled?: boolean; parsers?: string[] },
+) {
+  await page.request.post("/api/v1/__interpretation", { data: body });
+}
+
 /** Make the next call to `operation` fail once (test-only mock hook). */
 export async function failNext(
   page: Page,

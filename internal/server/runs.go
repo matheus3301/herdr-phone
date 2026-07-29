@@ -4,10 +4,12 @@ import (
 	"context"
 	"encoding/json"
 	"net/http"
+	"sort"
 	"strconv"
 	"strings"
 	"unicode/utf8"
 
+	"github.com/matheus3301/herdr-phone/internal/interpret"
 	"github.com/matheus3301/herdr-phone/internal/security"
 )
 
@@ -32,10 +34,19 @@ import (
 // so a client must ignore unknown fields and unknown part types.
 const runContractVersion = 1
 
-// partObservedTerminalOutput is the only part type this build emits. It is
+// partObservedTerminalOutput is the part type this build always emits. It is
 // terminal output that Herdr rendered, labelled as such. It carries no role and
 // must never be presented as an assistant message.
 const partObservedTerminalOutput = "observed_terminal_output"
+
+// The experimental interpreted part types (SPEC §12.2). They are emitted only when
+// `[experimental] agent_output_parsing` is on and a parser recognized the pane, and
+// they are purely additive: partObservedTerminalOutput is still emitted alongside
+// them, so the raw tail and the console never stop being available.
+const (
+	partInterpretedTranscript  = "interpreted_transcript"
+	partInterpretedInteraction = "interpreted_interaction"
+)
 
 // defaultRunOutputLines is the observed-output line count when the client does
 // not ask for one. It is clamped to Config.MaxRunOutputLines.
@@ -121,6 +132,14 @@ type runCapabilities struct {
 	StructuredPlans        bool `json:"structured_plans"`
 	ObservedTerminalOutput bool `json:"observed_terminal_output"`
 
+	// HeuristicInterpretation reports the experimental parsing feature (SPEC
+	// §12.2). It is deliberately NOT one of the StructuredMessages family: those
+	// mean "the relay has authoritative semantic data", and this means "the relay
+	// guessed by pattern-matching a third-party TUI". A client gates the chat
+	// presentation on this flag and must never treat it as a fidelity upgrade.
+	HeuristicInterpretation bool     `json:"heuristic_interpretation"`
+	InterpretationParsers   []string `json:"interpretation_parsers,omitempty"`
+
 	PartTypes     []string `json:"part_types"`
 	OutputSources []string `json:"output_sources"`
 
@@ -141,12 +160,37 @@ func (s *Server) runCapabilities() runCapabilities {
 		StructuredTests:        false,
 		StructuredPlans:        false,
 		ObservedTerminalOutput: true,
-		PartTypes:              []string{partObservedTerminalOutput},
+		PartTypes:              s.runPartTypes(),
 		OutputSources:          runOutputSources(),
 		MaxOutputBytes:         s.cfg.MaxRunOutputBytes,
 		MaxOutputLines:         s.cfg.MaxRunOutputLines,
 		MaxRuns:                s.cfg.MaxRuns,
+
+		HeuristicInterpretation: s.cfg.Interpretation.Enabled,
+		InterpretationParsers:   s.interpretationParsers(),
 	}
+}
+
+// runPartTypes advertises the part types this build can emit. The interpreted
+// types appear only while the experimental flag is on, so a client that gates on
+// the advertised list sees exactly today's contract when it is off.
+func (s *Server) runPartTypes() []string {
+	types := []string{partObservedTerminalOutput}
+	if s.cfg.Interpretation.Enabled {
+		types = append(types, partInterpretedTranscript, partInterpretedInteraction)
+	}
+	return types
+}
+
+// interpretationParsers returns the enabled parser list, or nil when the feature
+// is off so the field is omitted entirely rather than published as an empty array.
+func (s *Server) interpretationParsers() []string {
+	if !s.cfg.Interpretation.Enabled {
+		return nil
+	}
+	out := append([]string(nil), s.cfg.Interpretation.Parsers...)
+	sort.Strings(out)
+	return out
 }
 
 // runOutputSources is the sorted, allowlisted set of observed-output sources. It
@@ -183,7 +227,71 @@ type observedOutputPart struct {
 	Text      string `json:"text"`
 }
 
+// interpretedTurn is one turn of the experimental transcript.
+type interpretedTurn struct {
+	// Kind is agent_text, tool_call, tool_result, or status. A client must ignore
+	// an unknown kind rather than guess at it.
+	Kind string `json:"kind"`
+	Tool string `json:"tool,omitempty"`
+	Text string `json:"text"`
+}
+
+// interpretedTranscriptPart is the chat-shaped reading of the pane.
+type interpretedTranscriptPart struct {
+	Type   string `json:"type"`
+	Parser string `json:"parser"`
+	// Experimental is always true. It is on the wire so a single response is
+	// self-describing and a client cannot mistake this for authoritative data.
+	Experimental bool              `json:"experimental"`
+	Turns        []interpretedTurn `json:"turns"`
+	DroppedTurns int               `json:"dropped_turns"`
+	DroppedLines int               `json:"dropped_lines"`
+	// StartsMidTurn reports that the first turn began above the top of the bounded
+	// read, so it is a tail rather than a whole turn. Common on a busy pane, and the
+	// UI must say so instead of presenting a fragment as a complete answer.
+	StartsMidTurn bool `json:"starts_mid_turn,omitempty"`
+}
+
+// interpretedOption is one choice an interaction appears to offer.
+//
+// SendKey is empty whenever the option cannot be answered remotely, which is
+// always the case for a selection-row prompt whose highlight is invisible in text
+// mode. The relay synthesizes it from the parsed ordinal; it is never lifted from
+// screen text (SPEC §12.2).
+type interpretedOption struct {
+	Label   string `json:"label"`
+	SendKey string `json:"send_key,omitempty"`
+}
+
+type interpretedDiffLine struct {
+	Line int    `json:"line,omitempty"`
+	Op   string `json:"op"`
+	Text string `json:"text"`
+}
+
+// interpretedInteractionPart is the one prompt the pane appears to be blocked on.
+type interpretedInteractionPart struct {
+	Type         string `json:"type"`
+	Parser       string `json:"parser"`
+	Experimental bool   `json:"experimental"`
+	// Interaction is approval or question.
+	Interaction string   `json:"interaction"`
+	Title       string   `json:"title,omitempty"`
+	Detail      []string `json:"detail,omitempty"`
+	Question    string   `json:"question,omitempty"`
+	// Answerable is true only when every option carries a send key. A client must
+	// gate its action affordances on this and not on len(options).
+	Answerable bool                  `json:"answerable"`
+	Options    []interpretedOption   `json:"options,omitempty"`
+	Diff       []interpretedDiffLine `json:"diff,omitempty"`
+}
+
 // runResponse is one run plus its bounded parts.
+//
+// Parts is []any because the contract is a heterogeneous typed-part list: the
+// observed-output part is always present and the interpreted parts are appended
+// only when the experimental feature is on and a parser matched. Each element
+// carries its own `type`, which is how a client dispatches.
 type runResponse struct {
 	ContractVersion int             `json:"contract_version"`
 	Capabilities    runCapabilities `json:"capabilities"`
@@ -191,7 +299,7 @@ type runResponse struct {
 	// Parts is ordered oldest-to-newest and may be empty. A client must ignore
 	// part types it does not know and must never render a part as an assistant
 	// message unless its type says so.
-	Parts []observedOutputPart `json:"parts"`
+	Parts []any `json:"parts"`
 }
 
 // handleRuns returns the bounded run inbox derived from the current snapshot. It
@@ -325,19 +433,25 @@ func (s *Server) handleRun(w http.ResponseWriter, r *http.Request) {
 	}
 
 	text, truncatedOutput := boundObservedText(string(content), s.cfg.MaxRunOutputBytes)
+	// The observed-output part is emitted unconditionally and identically whether
+	// or not interpretation is enabled. Interpretation is additive by construction:
+	// the raw tail is the fallback the UI degrades to, so it must never be replaced.
+	parts := []any{observedOutputPart{
+		Type:      partObservedTerminalOutput,
+		Source:    source,
+		Format:    "text",
+		Lines:     countLines(text),
+		Bytes:     len(text),
+		Truncated: truncatedOutput,
+		Text:      text,
+	}}
+	parts = append(parts, s.interpretedParts(run.AgentKind, text)...)
+
 	resp := runResponse{
 		ContractVersion: runContractVersion,
 		Capabilities:    s.runCapabilities(),
 		Run:             run,
-		Parts: []observedOutputPart{{
-			Type:      partObservedTerminalOutput,
-			Source:    source,
-			Format:    "text",
-			Lines:     countLines(text),
-			Bytes:     len(text),
-			Truncated: truncatedOutput,
-			Text:      text,
-		}},
+		Parts:           parts,
 	}
 	body, err := json.Marshal(resp)
 	if err != nil {
@@ -355,6 +469,75 @@ func (s *Server) handleRun(w http.ResponseWriter, r *http.Request) {
 		Bytes:     len(text),
 	})
 	s.writeMaybeGzip(w, r, http.StatusOK, "application/json; charset=utf-8", body)
+}
+
+// interpretedParts runs the experimental heuristic pass and returns the parts it
+// produced, or nil.
+//
+// nil is returned — and no parser code runs at all — when the feature is off, when
+// the pane's agent kind is not in the configured parser list, or when the parser
+// found nothing it recognized. A no-match is a normal outcome, not an error: the
+// client falls back to the observed-output part that was already emitted.
+//
+// The input is the *already sanitized and byte-bounded* observed text, so the
+// parser inherits the boundary guarantees rather than re-establishing them, and
+// nothing here is logged or persisted.
+func (s *Server) interpretedParts(agentKind, text string) []any {
+	if !s.cfg.Interpretation.parses(agentKind) {
+		return nil
+	}
+	lim := interpret.DefaultLimits()
+	lim.MaxTurns = s.cfg.Interpretation.MaxTurns
+
+	res, ok := interpret.Parse(interpret.Kind(agentKind), text, lim)
+	if !ok {
+		return nil
+	}
+
+	var parts []any
+	if len(res.Turns) > 0 {
+		turns := make([]interpretedTurn, 0, len(res.Turns))
+		for _, t := range res.Turns {
+			turns = append(turns, interpretedTurn{
+				Kind: string(t.Kind),
+				Tool: t.Tool,
+				Text: t.Text,
+			})
+		}
+		parts = append(parts, interpretedTranscriptPart{
+			Type:          partInterpretedTranscript,
+			Parser:        string(res.Parser),
+			Experimental:  true,
+			Turns:         turns,
+			DroppedTurns:  res.DroppedTurns,
+			DroppedLines:  res.DroppedLines,
+			StartsMidTurn: res.PartialLead,
+		})
+	}
+
+	if in := res.Interaction; in != nil {
+		opts := make([]interpretedOption, 0, len(in.Options))
+		for _, o := range in.Options {
+			opts = append(opts, interpretedOption{Label: o.Label, SendKey: o.SendKey})
+		}
+		diff := make([]interpretedDiffLine, 0, len(in.Diff))
+		for _, d := range in.Diff {
+			diff = append(diff, interpretedDiffLine{Line: d.Line, Op: string(d.Op), Text: d.Text})
+		}
+		parts = append(parts, interpretedInteractionPart{
+			Type:         partInterpretedInteraction,
+			Parser:       string(res.Parser),
+			Experimental: true,
+			Interaction:  string(in.Kind),
+			Title:        in.Title,
+			Detail:       in.Detail,
+			Question:     in.Question,
+			Answerable:   in.Answerable,
+			Options:      opts,
+			Diff:         diff,
+		})
+	}
+	return parts
 }
 
 // findRun locates one sanitized run by canonical pane id.

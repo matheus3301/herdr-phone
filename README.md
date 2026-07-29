@@ -426,6 +426,11 @@ poll_cold = "12s"
 [ui]
 theme = "system"
 terminal_font_size = 13
+
+[experimental]
+agent_output_parsing = false                      # off by default; see below
+agent_output_parsers = ["claude", "opencode"]
+max_interpreted_turns = 60
 ```
 
 Validation highlights:
@@ -444,6 +449,41 @@ Validation highlights:
   [Session lifetime in named mode](#session-lifetime-in-named-mode).
 - Durations are positive and bounded; `poll_hot` is at least 250 ms.
 - Allowed workspace roots must exist and must not escape via symlink.
+- `experimental.agent_output_parsers` accepts only `claude` and `opencode`; an
+  unrecognized name fails startup rather than silently parsing nothing.
+
+### Experimental: reading the agent's output as a chat
+
+Off by default. With `agent_output_parsing = true`, the relay pattern-matches the
+on-screen output of Claude Code and OpenCode and the run page renders as a
+conversation — the agent's apparent prose, its tool calls, and the question or
+approval it looks like it is waiting on, with tappable answers.
+
+Be clear about what this is before you turn it on:
+
+- **It is a guess.** Herdr publishes no conversation API, so this reads pixels'
+  worth of text off a terminal. It will misread things, and it will break when
+  Claude Code or OpenCode changes its interface.
+- **It never pretends otherwise.** The chat carries a standing "experimental
+  reading" label, the relay advertises it as `heuristic_interpretation` rather than
+  as structured data, and the raw terminal output stays on the page with the console
+  one tap away. Turning the flag back off restores the previous run page exactly.
+- **Answering is deliberate.** Tapping a detected option shows you the literal
+  keystroke it will send and waits for you to confirm. Nothing is ever sent on one
+  tap, and the key comes from the option's number — never from text scraped off the
+  screen.
+- **OpenCode prompts are shown but not answerable.** OpenCode marks the selected
+  button with terminal styling that the relay's text read discards, so there is no
+  way to know what pressing Enter would choose. Those prompts are surfaced with a
+  link to the console instead of a guess.
+
+```toml
+[experimental]
+agent_output_parsing = true
+agent_output_parsers = ["claude"]   # narrow it if you only trust one grammar
+```
+
+Restart the relay after changing it: the capability is read at startup.
 
 ## Running: start, stop, status
 
@@ -801,9 +841,12 @@ actions; no multi-user collaboration or simultaneous terminal controllers; no
 automatic Cloudflare tunnel/DNS/Access provisioning; no automatic `cloudflared`
 installation or self-update; no start-at-login or reboot survival without user
 configuration; no persistent or on-disk app sessions (they stay in daemon memory);
-no multi-session Herdr aggregation; no parsing of agent-specific
-approval screens into native controls; and no file browsing beyond directory
-selection, file upload, clipboard image transfer, or arbitrary downloads. See
+no multi-session Herdr aggregation; no parsing of agent-specific approval screens
+into native controls *in the default build* (see
+[the experimental opt-in](#experimental-reading-the-agents-output-as-a-chat), which
+is off unless you enable it and is never treated as authoritative); no blind one-tap
+approvals in any configuration; and no file browsing beyond directory selection,
+file upload, clipboard image transfer, or arbitrary downloads. See
 [SPEC.md](SPEC.md) §21 for the full list.
 
 ## Contributing

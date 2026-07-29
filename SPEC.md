@@ -387,6 +387,11 @@ poll_cold = "12s"
 [ui]
 theme = "system"
 terminal_font_size = 13
+
+[experimental]
+agent_output_parsing = false
+agent_output_parsers = ["claude", "opencode"]
+max_interpreted_turns = 60
 ```
 
 Validation:
@@ -404,6 +409,11 @@ Validation:
   not readable by group/other.
 - Durations are positive and bounded. Poll hot is at least 250 ms.
 - Allowed workspace roots must exist and resolve without escaping by symlink.
+- `experimental.agent_output_parsers` accepts only recognized agent kinds
+  (`claude`, `opencode`); an unrecognized name is an error so a typo fails at start
+  rather than silently parsing nothing. `max_interpreted_turns` is positive and
+  bounded. The list is irrelevant while `agent_output_parsing = false`, which is the
+  default and under which no parser code runs (§12.2).
 
 ## 9. Authentication and Request Security
 
@@ -734,6 +744,199 @@ output, or run state is cached, persisted, or written to disk, so each request
 reads fresh from Herdr and there is no run-state store to bound or race.
 `detection` is not an accepted output source — it is Herdr's classifier buffer,
 not operator-facing output.
+
+### 12.2 Experimental heuristic interpretation
+
+Opt-in, off by default, and **purely additive**. §12.1 forbids the UI from
+inferring structure the relay did not advertise; this section does not weaken that
+rule, it satisfies it by moving the inference into the relay and making the relay
+say so. Nothing here is authoritative: `structured_messages` and every other
+`structured_*` flag stay `false`, because Herdr still supplies no semantic
+conversation data. What is added is an explicitly-labelled *guess*.
+
+#### Observed agent grammars
+
+Captured 2026-07-28 from real PTY sessions rendered to a screen grid, because the
+relay reads `pane.read` with `format: text` — the parser's input is therefore
+already-rendered plain screen text with no ANSI, no CR overwrite, and no C0/C1
+(§12.1's `SanitizeTextBlock` runs first).
+
+**Claude Code 2.1.220.** Line-prefix markers: `⏺` assistant text and tool calls
+(`⏺ Bash(cmd)`), `⎿` tool results, `✻` status (`✻ Worked for 4s · ↓ 139 tokens`),
+`❯` the input line. Footer modes: `⏸ manual mode on`, `⏵⏵ auto mode on (shift+tab
+to cycle)`. Interaction prompts are an indented block, not a box:
+
+```text
+ Bash command
+
+   echo "hello fixture" >> notes.txt && cat -A notes.txt | tail -3
+   Append line to notes.txt and verify
+
+ Do you want to proceed?
+ ❯ 1. Yes
+   2. Yes, and always allow access to sandbox/ from this project
+   3. No
+
+ Esc to cancel · Tab to amend · ctrl+e to explain
+```
+
+Options are **numbered**, so the answer is a single digit. The trust dialog uses
+the identical grammar (`❯ 1. Yes, I trust this folder` / `2. No, exit` / `Enter to
+confirm · Esc to cancel`).
+
+Three structural rules come from reading *real* panes rather than hand-written
+fixtures, and each fixes a defect a fixture could not surface:
+
+- **A bounded read usually opens mid-answer.** Claude Code writes long replies, so a
+  40-line read of a busy pane often contains no `⏺` at all. Treating those rows as
+  unmarked chrome discarded the whole answer and left a transcript holding only the
+  spinner row. A leading run of rows indented ≥ 2 before any marker is therefore
+  recovered as one turn, and the part reports `starts_mid_turn` so the UI can say the
+  reply began above the window instead of presenting a fragment as complete.
+- **The last `❯` ends the transcript.** The composer sits at the bottom and Claude
+  Code's own footer (model name, mode banner, cwd) sits *below* it, so everything
+  from the last input row onward is chrome by construction. This is what keeps footer
+  rows out of the transcript without enumerating footer wording, which changes between
+  releases. `❯` is overloaded — it also marks the highlighted option row (`❯ 1. Yes`)
+  — so an option row is explicitly excluded, or the cut would delete every prompt.
+- **A row whose first visible glyph is box/block art is frame**, even when it carries
+  text on the same line (`▐▛███▜▌   Claude Code v2.1.220`). Agent prose never opens
+  with a block glyph, and without this the mid-answer recovery adopted the welcome
+  banner as the agent's words.
+- A status row never accepts continuation rows; leaving it open let the footer append
+  to it (`Crunched for 3m 48s new task? /clear to save 276k tokens`).
+
+**OpenCode 1.18.4.** Gutter prefix `┃` on framed blocks; `→` tool call, `✱` search
+tool, `~` in-progress status, `▣` model/status footer. Interaction prompts:
+
+```text
+  ┃  △ Permission required
+  ┃    → Edit private/tmp/hp-capture/sandbox/notes.txt
+  ┃
+  ┃  1   sample file for the fixture capture
+  ┃  2 + hello fixture
+  ┃
+  ┃   Allow once   Allow always   Reject  ctrl+f fullscreen  ⇆ select  enter confirm
+```
+
+A gutter-framed row is the output of something OpenCode **ran** (a shell block, a
+patch), never the agent's own prose, so framing must survive frame-stripping and
+classify the row as `tool_result`. `+ Thought: … · 4.1s` is a reasoning readout and
+is `status`. Both were originally rendered as `agent_text`, which attributed shell
+output and progress spinners to the agent.
+
+Options are a **horizontal button row with no ordinal**, and which button is
+highlighted is carried by SGR styling alone — which `format: text` discards.
+Therefore an OpenCode interaction is **detected but not answerable**: the relay
+sets `answerable: false`, publishes the option labels as display-only text with no
+`send_key`, and the UI routes the operator to the console. Sending Tab/Enter
+navigation is specifically rejected: the starting highlight is unobservable, so the
+keystroke count would be a guess that could select `Reject` when the operator meant
+`Allow once`.
+
+#### Configuration
+
+```toml
+[experimental]
+# Off by default. Enabling this makes the relay publish heuristic readings of
+# terminal text. They are guesses about a third-party TUI, they will break when
+# that TUI changes, and they are never authoritative.
+agent_output_parsing = false
+# Agent kinds whose grammar may be parsed. An unrecognized name is a config
+# error, so a typo fails at start instead of silently parsing nothing.
+agent_output_parsers = ["claude", "opencode"]
+# Bound on interpreted turns per read. Oldest are dropped and the drop reported.
+max_interpreted_turns = 60
+```
+
+Unknown keys remain errors (§8). With `agent_output_parsing = false` the relay's
+run responses and capability document are **byte-identical** to §12.1, and no
+parser code executes.
+
+#### Capability advertisement
+
+The `runs` document gains, and the UI gates on, exactly:
+
+```text
+heuristic_interpretation: bool, interpretation_parsers: []string
+```
+
+`detectRunFidelity` is unchanged and still returns `observed` — heuristic
+interpretation is a separate boolean, never a fidelity upgrade, so it can never be
+confused with `structured`. Two new `part_types` are advertised only while enabled.
+
+#### Part types
+
+Both carry `"experimental": true` so a single response is self-describing, and both
+are additive: `observed_terminal_output` is **always** emitted, unchanged, so the
+raw tail and the console stay available and turning the flag off is a true revert.
+
+```json
+{"type":"interpreted_transcript","parser":"claude","experimental":true,
+ "turns":[{"kind":"agent_text","text":"I'll append the line."},
+          {"kind":"tool_call","tool":"Bash","text":"echo hi >> notes.txt"},
+          {"kind":"tool_result","text":"hello"},
+          {"kind":"status","text":"Worked for 4s"}],
+ "dropped_turns":0,"dropped_lines":12}
+```
+
+```json
+{"type":"interpreted_interaction","parser":"claude","experimental":true,
+ "interaction":"approval","title":"Bash command",
+ "detail":["echo \"hello fixture\" >> notes.txt","Append line to notes.txt and verify"],
+ "question":"Do you want to proceed?","answerable":true,
+ "options":[{"label":"Yes","send_key":"1"},
+            {"label":"Yes, and always allow access to sandbox/ from this project","send_key":"2"},
+            {"label":"No","send_key":"3"}],
+ "diff":null}
+```
+
+`turns[].kind` is one of `agent_text`, `tool_call`, `tool_result`, `status`.
+`interaction` is `approval` or `question`. `diff` is `null` or a list of
+`{line, op, text}` with `op` in `context`/`add`/`remove`. **A client must ignore an
+unknown `kind`, `interaction`, or `op` rather than guess**, exactly as for part
+types. At most one `interpreted_interaction` is emitted — the live prompt.
+
+`send_key` is the security-critical field. It is **synthesized by the relay from
+the parsed ordinal and validated against `^[1-9]$`**; it is never lifted from
+screen text. Option `label` is untrusted display text from the pane and is
+sanitized and length-bounded like any other display string. An option that cannot
+be assigned a valid key gets `send_key: null` and is not offered as an action.
+`answerable` is false whenever any offered option lacks a key.
+
+#### Answering an interaction
+
+There is **no new mutation and no one-tap send**. Tapping an option prefills the
+existing send-keys flow with the literal key, displays it verbatim, and requires an
+explicit confirm; delivery then goes through the existing `agent.send_keys`
+allowlist entry with the mandatory `expected_generation` guard (§11). §21's "no
+blind one-tap approvals" therefore still holds: the operator sees exactly which
+bytes will reach the agent and confirms them.
+
+#### Bounds, failure, and security
+
+- The parser runs **after** `boundObservedText`, so its input is already
+  sanitized, byte-bounded, and free of control characters. Every string it emits is
+  re-sanitized and length-bounded on the way out (defence in depth).
+- Single linear scan, no backtracking patterns, bounded turns/options/detail lines.
+  It must never panic; a fuzz target lives beside `internal/security/ansi.go`'s
+  oracle and asserts termination, bounds, and output sanitization.
+- No match is a first-class outcome: the transcript part is simply omitted and the
+  UI shows the raw tail. A parser must never invent a turn to fill a gap.
+- Interpreted content is never logged, persisted, or cached. The audit trail keeps
+  recording byte counts and outcomes only (§17), and run responses stay `no-store`.
+- Interpretation is confined to `pane_id`s whose run reports an `agent_kind` in
+  `agent_output_parsers`. A pane running anything else is never parsed.
+
+#### Presentation contract
+
+With the flag on and a transcript part present, the run page renders as a **chat**:
+operator instructions (authoritative — the user typed them), interpreted agent
+turns, and the interaction card. A persistent, non-dismissible label states the
+turns are a heuristic reading of terminal text rather than the agent's own
+messages, and the raw tail plus a one-tap console route remain on the page. With
+the flag off, or with no transcript part, the page renders exactly as it does
+today.
 
 ## 13. Terminal Bridge
 
@@ -1077,7 +1280,16 @@ revocation steps.
 - Multi-session Herdr aggregation.
 - Persistent or on-disk app sessions; sessions stay in daemon memory.
 - Dropping or weakening pairing in quick mode.
-- Parsing agent-specific approval screens into native controls.
+- Parsing agent-specific approval screens into native controls **in the default
+  build**. §12.2 adds this behind `[experimental] agent_output_parsing`, which is
+  off by default; with it off, no parser code runs. Even with it on, the readings
+  are advertised as heuristic, `structured_*` stays false, raw output stays
+  reachable, and answering still requires an explicit confirm — so "no blind
+  one-tap approvals" below continues to hold.
+- Blind one-tap approvals, in any configuration.
+- Answering an OpenCode interaction from the phone: its option highlight is carried
+  by ANSI styling that `format: text` discards, so the relay detects the prompt but
+  never offers an action for it (§12.2).
 - File browsing beyond directory selection, file upload, clipboard image transfer,
   or arbitrary downloads.
 - Exposing Herdr server/plugin/integration administration.

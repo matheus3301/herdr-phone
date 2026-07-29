@@ -1,0 +1,21 @@
+⏺ I'll check the existing file ending, then append the line.
+
+⏺ Bash(ls -la && cat notes.txt)
+  ⎿  total 8
+     -rw-r--r--@ 1 matheus  wheel   36 Jul 28 20:30 notes.txt
+     sample file for the fixture capture
+
+⏺ Bash(echo "hello fixture" >> notes.txt && cat -A notes.txt | tail -3)
+
+────────────────────────────────────────────────────────────────────────────────
+ Bash command
+
+   echo "hello fixture" >> notes.txt && cat -A notes.txt | tail -3
+   Append line to notes.txt and verify
+
+ Do you want to proceed?
+ ❯ 1. Yes
+   2. Yes, and always allow access to sandbox/ from this project
+   3. No
+
+ Esc to cancel · Tab to amend · ctrl+e to explain

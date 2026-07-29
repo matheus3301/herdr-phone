@@ -1,0 +1,18 @@
+     I’ll verify the file and append the requested line.
+
+     ✱ Glob "notes.txt" in . (1 match)
+     → Read notes.txt
+     ~ Preparing patch...
+
+     ▣  Build · GPT-5.6
+
+  ┃
+  ┃  △ Permission required
+  ┃    → Edit private/tmp/hp-capture/sandbox/notes.txt
+  ┃
+  ┃  1   sample file for the fixture capture
+  ┃  2 + hello fixture
+  ┃
+  ┃   Allow once   Allow always   Reject  ctrl+f fullscreen  ⇆ select  enter confirm
+  ╹▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀
+   /private/tmp/hp-capture/sandbox         49.2K (5%) · $0.36  ctrl+p commands

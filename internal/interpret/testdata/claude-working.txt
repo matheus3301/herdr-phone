@@ -1,0 +1,18 @@
+⏺ I'm going to read the config first, then make the change.
+
+⏺ Read(internal/config/config.go)
+  ⎿  Read 713 lines
+
+⏺ The strict decoder rejects unknown keys, so the new section has to be
+  registered in rawConfig as well.
+
+⏺ Edit(internal/config/config.go)
+  ⎿  Updated internal/config/config.go with 12 additions
+
+✻ Sautéed for 5s · ↓ 139 tokens · thought for 1s
+                                                                    1836 tokens
+────────────────────────────────────────────────────────────────────────────────
+❯
+────────────────────────────────────────────────────────────────────────────────
+  Opus 5 (1M context) | ctx: 0%
+  ⏵⏵ auto mode on (shift+tab to cycle)

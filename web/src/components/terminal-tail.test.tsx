@@ -2,6 +2,7 @@ import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 import { render, screen } from "@testing-library/react";
 import { MemoryRouter } from "react-router-dom";
 import { TerminalTail } from "./terminal-tail";
+import { useRunOutput } from "@/hooks/use-runs";
 import * as api from "@/lib/api";
 import { ApiError } from "@/lib/api";
 import { buildRuns } from "@/lib/run";
@@ -40,7 +41,18 @@ function part(overrides: Partial<WireObservedOutputPart> = {}): WireObservedOutp
   };
 }
 
-function mount(opts: { contract?: boolean } = {}) {
+/**
+ * The read is owned by the run route now, so the chat and the tail render from one
+ * response (SPEC §12.2). This harness reproduces that ownership: it performs the
+ * read exactly as the route does and hands the view down, so these tests keep
+ * exercising the real fetch-to-render path rather than a hand-built view object.
+ */
+function TailHarness({ secondary = false }: { secondary?: boolean }) {
+  const view = useRunOutput(run);
+  return <TerminalTail run={run} now={Date.now()} view={view} secondary={secondary} />;
+}
+
+function mount(opts: { contract?: boolean; secondary?: boolean } = {}) {
   seedStore({
     ready: true,
     snapshot: makeSnapshot(),
@@ -49,7 +61,7 @@ function mount(opts: { contract?: boolean } = {}) {
   });
   return render(
     <MemoryRouter>
-      <TerminalTail run={run} now={Date.now()} />
+      <TailHarness secondary={opts.secondary} />
     </MemoryRouter>,
   );
 }

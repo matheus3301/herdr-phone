@@ -16,11 +16,14 @@ import (
 	"net/url"
 	"os"
 	"path/filepath"
+	"slices"
 	"sort"
 	"strings"
 	"time"
 
 	"github.com/BurntSushi/toml"
+
+	"github.com/matheus3301/herdr-phone/internal/interpret"
 )
 
 // Cloudflare front-door modes.
@@ -53,6 +56,9 @@ const (
 	DefaultPollHot          = 1500 * time.Millisecond
 	DefaultPollCold         = 12 * time.Second
 	DefaultTerminalFontSize = 13
+	// DefaultMaxInterpretedTurns bounds the experimental transcript. It matches
+	// interpret.DefaultLimits().MaxTurns.
+	DefaultMaxInterpretedTurns = 60
 )
 
 // Validation bounds.
@@ -65,16 +71,18 @@ const (
 	maxPollInterval    = 10 * time.Minute
 	minTerminalFont    = 8
 	maxTerminalFont    = 72
+	maxInterpretedTurn = 500 // a chat view nobody can scroll is not a feature
 	maxIdentityRuneLen = 320 // RFC 5321 practical maximum for an email address.
 )
 
 // Config is the fully resolved, validated configuration.
 type Config struct {
-	Server     Server
-	Cloudflare Cloudflare
-	Access     Access
-	Herdr      Herdr
-	UI         UI
+	Server       Server
+	Cloudflare   Cloudflare
+	Access       Access
+	Herdr        Herdr
+	UI           UI
+	Experimental Experimental
 	// SourcePath is the file the config was loaded from, or "" when built-in
 	// defaults were used.
 	SourcePath string
@@ -139,6 +147,22 @@ type UI struct {
 	TerminalFontSize int
 }
 
+// Experimental holds opt-in behaviour that is off by default because it is not
+// authoritative. Nothing in here may change how the relay behaves unless the
+// operator turned it on explicitly (SPEC §12.2).
+type Experimental struct {
+	// AgentOutputParsing enables heuristic interpretation of agent terminal text.
+	// While false, no parser code runs and the run contract is byte-identical to
+	// the non-experimental one.
+	AgentOutputParsing bool
+	// AgentOutputParsers is the set of agent kinds whose grammar may be parsed.
+	// Every entry must name a parser this build implements, so a typo fails at
+	// start rather than silently parsing nothing.
+	AgentOutputParsers []string
+	// MaxInterpretedTurns bounds how many turns one read may publish.
+	MaxInterpretedTurns int
+}
+
 // Default returns the built-in default configuration. Named mode with empty
 // credentials is deliberately not a runnable configuration: a real deployment
 // must supply a public URL and a credential strategy (see config.example.toml).
@@ -171,7 +195,26 @@ func Default() Config {
 			Theme:            ThemeSystem,
 			TerminalFontSize: DefaultTerminalFontSize,
 		},
+		Experimental: Experimental{
+			// Off by default, deliberately. Enabling this publishes guesses about a
+			// third-party TUI's layout; that is a decision an operator makes, never a
+			// default they inherit.
+			AgentOutputParsing:  false,
+			AgentOutputParsers:  defaultAgentOutputParsers(),
+			MaxInterpretedTurns: DefaultMaxInterpretedTurns,
+		},
 	}
+}
+
+// defaultAgentOutputParsers lists every parser this build implements. It is only
+// consulted when AgentOutputParsing is true.
+func defaultAgentOutputParsers() []string {
+	kinds := interpret.ParserKinds()
+	out := make([]string, 0, len(kinds))
+	for _, k := range kinds {
+		out = append(out, string(k))
+	}
+	return out
 }
 
 // Path resolves the configuration file path following the documented precedence.
@@ -273,11 +316,12 @@ func LoadData(data []byte, env func(string) string) (Config, error) {
 }
 
 type rawConfig struct {
-	Server     *rawServer     `toml:"server"`
-	Cloudflare *rawCloudflare `toml:"cloudflare"`
-	Auth       *rawAuth       `toml:"auth"`
-	Herdr      *rawHerdr      `toml:"herdr"`
-	UI         *rawUI         `toml:"ui"`
+	Server       *rawServer       `toml:"server"`
+	Cloudflare   *rawCloudflare   `toml:"cloudflare"`
+	Auth         *rawAuth         `toml:"auth"`
+	Herdr        *rawHerdr        `toml:"herdr"`
+	UI           *rawUI           `toml:"ui"`
+	Experimental *rawExperimental `toml:"experimental"`
 }
 
 type rawServer struct {
@@ -324,6 +368,14 @@ type rawHerdr struct {
 type rawUI struct {
 	Theme            *string `toml:"theme"`
 	TerminalFontSize *int    `toml:"terminal_font_size"`
+}
+
+type rawExperimental struct {
+	AgentOutputParsing *bool     `toml:"agent_output_parsing"`
+	AgentOutputParsers *[]string `toml:"agent_output_parsers"`
+	// MaxInterpretedTurns is a pointer so an explicit 0 is a validation error
+	// rather than silently taking the default.
+	MaxInterpretedTurns *int `toml:"max_interpreted_turns"`
 }
 
 func decodeInto(cfg *Config, data []byte) error {
@@ -412,6 +464,19 @@ func (r rawConfig) applyTo(cfg *Config) error {
 			cfg.UI.TerminalFontSize = *u.TerminalFontSize
 		}
 	}
+	if e := r.Experimental; e != nil {
+		if e.AgentOutputParsing != nil {
+			cfg.Experimental.AgentOutputParsing = *e.AgentOutputParsing
+		}
+		if e.AgentOutputParsers != nil {
+			// Replace rather than merge: an operator narrowing the list to one agent
+			// must not silently keep the other.
+			cfg.Experimental.AgentOutputParsers = append([]string(nil), (*e.AgentOutputParsers)...)
+		}
+		if e.MaxInterpretedTurns != nil {
+			cfg.Experimental.MaxInterpretedTurns = *e.MaxInterpretedTurns
+		}
+	}
 	return nil
 }
 
@@ -479,6 +544,9 @@ func (c Config) Validate() error {
 		return err
 	}
 	if err := c.Herdr.validate(); err != nil {
+		return err
+	}
+	if err := c.Experimental.validate(); err != nil {
 		return err
 	}
 	if err := c.UI.validate(); err != nil {
@@ -662,6 +730,50 @@ func (u UI) validate() error {
 		return fmt.Errorf("ui.terminal_font_size must be between %d and %d, got %d", minTerminalFont, maxTerminalFont, u.TerminalFontSize)
 	}
 	return nil
+}
+
+// validate checks the experimental section.
+//
+// The parser list and the turn bound are validated even when the feature is off,
+// so a mistake surfaces at start rather than the first time somebody flips the
+// flag on and finds the relay refuses to boot.
+func (e Experimental) validate() error {
+	for _, name := range e.AgentOutputParsers {
+		if !interpret.Supported(name) {
+			return fmt.Errorf(
+				"experimental.agent_output_parsers contains unknown agent kind %q; supported: %s",
+				name, strings.Join(supportedParserNames(), ", "),
+			)
+		}
+	}
+	if e.AgentOutputParsing && len(e.AgentOutputParsers) == 0 {
+		return errors.New("experimental.agent_output_parsing is true but agent_output_parsers is empty; nothing would be parsed")
+	}
+	if e.MaxInterpretedTurns < 1 || e.MaxInterpretedTurns > maxInterpretedTurn {
+		return fmt.Errorf(
+			"experimental.max_interpreted_turns must be between 1 and %d, got %d",
+			maxInterpretedTurn, e.MaxInterpretedTurns,
+		)
+	}
+	return nil
+}
+
+// ParsesAgentKind reports whether interpretation is enabled for one agent kind.
+// A pane running anything else is never parsed (SPEC §12.2).
+func (e Experimental) ParsesAgentKind(kind string) bool {
+	if !e.AgentOutputParsing || kind == "" {
+		return false
+	}
+	return slices.Contains(e.AgentOutputParsers, kind)
+}
+
+func supportedParserNames() []string {
+	kinds := interpret.ParserKinds()
+	out := make([]string, 0, len(kinds))
+	for _, k := range kinds {
+		out = append(out, string(k))
+	}
+	return out
 }
 
 func checkDuration(field string, d, max time.Duration) error {

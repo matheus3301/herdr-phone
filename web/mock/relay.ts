@@ -51,6 +51,12 @@ const CSRF = "mock-csrf-token";
  * which stands in for an expired/invalid Access token: every authenticated route
  * then answers 401 `access denied`, the rejection the origin emits at middleware
  * step 2 before it ever looks at the app session.
+ *
+ * Experimental heuristic interpretation (SPEC §12.2) is OFF by default here, as it
+ * is in config. `POST /api/v1/__interpretation {"enabled":true}` advertises
+ * `heuristic_interpretation`, adds the two interpreted part types, and appends the
+ * interpreted parts to a run read — always *alongside* the observed-output part,
+ * never instead of it.
  */
 type MockMode = "named" | "quick";
 const ENV_MODE: MockMode = process.env.MOCK_RELAY_MODE === "named" ? "named" : "quick";
@@ -280,8 +286,24 @@ const runContract = {
 
 const RUN_CONTRACT_VERSION = 1;
 const PART_OBSERVED_TERMINAL_OUTPUT = "observed_terminal_output";
+const PART_INTERPRETED_TRANSCRIPT = "interpreted_transcript";
+const PART_INTERPRETED_INTERACTION = "interpreted_interaction";
 const DEFAULT_RUN_OUTPUT_LINES = 200;
 const RUN_OUTPUT_SOURCES = ["recent", "recent-unwrapped", "visible"];
+
+/**
+ * Experimental heuristic interpretation (SPEC §12.2), off by default exactly as in
+ * `[experimental] agent_output_parsing`. `POST /api/v1/__interpretation` flips it,
+ * so a journey can cover both the default contract and the chat view.
+ *
+ * The mock does NOT re-implement internal/interpret's grammars — that would test a
+ * second parser rather than the wire contract. It emits the part shapes the Go
+ * relay emits for the captured fixtures, which is what the browser must consume.
+ */
+const interpretation = {
+  enabled: false,
+  parsers: ["claude", "opencode"],
+};
 
 /** Mirrors internal/server/runs.go runCapabilities: every semantic flag false. */
 function runCapabilities() {
@@ -295,12 +317,99 @@ function runCapabilities() {
     structured_tests: false,
     structured_plans: false,
     observed_terminal_output: true,
-    part_types: [PART_OBSERVED_TERMINAL_OUTPUT],
+    // Never a structured_* flag: interpretation is advertised as a guess.
+    heuristic_interpretation: interpretation.enabled,
+    ...(interpretation.enabled ? { interpretation_parsers: [...interpretation.parsers].sort() } : {}),
+    part_types: interpretation.enabled
+      ? [PART_OBSERVED_TERMINAL_OUTPUT, PART_INTERPRETED_TRANSCRIPT, PART_INTERPRETED_INTERACTION]
+      : [PART_OBSERVED_TERMINAL_OUTPUT],
     output_sources: RUN_OUTPUT_SOURCES,
     max_output_bytes: runContract.maxOutputBytes,
     max_output_lines: runContract.maxOutputLines,
     max_runs: runContract.maxRuns,
   };
+}
+
+/**
+ * The interpreted parts for one pane, mirroring what internal/server/runs.go emits
+ * for the Claude Code 2.1.220 and OpenCode 1.18.4 fixtures.
+ *
+ * Returns [] when the feature is off or the pane's agent kind is not configured —
+ * the same two gates the Go relay applies.
+ */
+function interpretedParts(paneId: string): unknown[] {
+  if (!interpretation.enabled) return [];
+  const run = projectRuns().find((r) => r.pane_id === paneId);
+  const kind = run?.agent_kind ?? "";
+  if (!interpretation.parsers.includes(kind)) return [];
+
+  if (kind === "opencode") {
+    // Detected, but never answerable: the highlighted button is carried by ANSI
+    // styling that `format: text` discards, so no option gets a send_key.
+    return [
+      {
+        type: PART_INTERPRETED_TRANSCRIPT,
+        parser: "opencode",
+        experimental: true,
+        turns: [
+          { kind: "agent_text", text: "I’ll verify the file and append the requested line." },
+          { kind: "tool_call", tool: "Read", text: "notes.txt" },
+          // A gutter-framed block is output of something OpenCode *ran*, never the
+          // agent's own words (SPEC §12.2).
+          { kind: "tool_result", text: "$ cat notes.txt" },
+          { kind: "status", text: "Thought: Considering the file ending · 1.8s" },
+        ],
+        dropped_turns: 0,
+        dropped_lines: 6,
+      },
+      {
+        type: PART_INTERPRETED_INTERACTION,
+        parser: "opencode",
+        experimental: true,
+        interaction: "approval",
+        title: "Edit /tmp/sandbox/notes.txt",
+        question: "Permission required",
+        answerable: false,
+        options: [{ label: "Allow once" }, { label: "Allow always" }, { label: "Reject" }],
+        diff: [
+          { line: 1, op: "context", text: "sample file for the fixture capture" },
+          { line: 2, op: "add", text: "hello fixture" },
+        ],
+      },
+    ];
+  }
+
+  return [
+    {
+      type: PART_INTERPRETED_TRANSCRIPT,
+      parser: "claude",
+      experimental: true,
+      turns: [
+        { kind: "agent_text", text: "I'll check the existing file ending, then append the line." },
+        { kind: "tool_call", tool: "Bash", text: "ls -la && cat notes.txt" },
+        { kind: "tool_result", text: "sample file for the fixture capture" },
+        { kind: "status", text: "Worked for 4s · 139 tokens" },
+      ],
+      dropped_turns: 0,
+      dropped_lines: 9,
+      starts_mid_turn: false,
+    },
+    {
+      type: PART_INTERPRETED_INTERACTION,
+      parser: "claude",
+      experimental: true,
+      interaction: "approval",
+      title: "Bash command",
+      detail: ['echo "hello fixture" >> notes.txt', "Append line to notes.txt and verify"],
+      question: "Do you want to proceed?",
+      answerable: true,
+      options: [
+        { label: "Yes", send_key: "1" },
+        { label: "Yes, and always allow access to sandbox/ from this project", send_key: "2" },
+        { label: "No", send_key: "3" },
+      ],
+    },
+  ];
 }
 
 /** A 16-hex-character digest of the pane's occupant, as internal/state does. */
@@ -398,7 +507,7 @@ function capabilities() {
       "worktree.create", "worktree.open", "worktree.remove", "worktree.remove_force",
     ],
     capabilities: { herdr_version: "0.7.5", herdr_protocol: 17, live_handoff: true, agent_kinds: ["claude", "codex", "opencode", "gemini", "cursor"] },
-    status: { version: "0.3.0", protocol: 17, mode, ready: true, herdr: { healthy: true }, state: { healthy: true }, clients: eventClients.size },
+    status: { version: "0.4.0", protocol: 17, mode, ready: true, herdr: { healthy: true }, state: { healthy: true }, clients: eventClients.size },
     tunnel: {
       mode,
       public_url: mode === "named" ? "https://phone.example.com" : "https://example.trycloudflare.com",
@@ -1069,6 +1178,9 @@ function handleRunDetail(res: ServerResponse, paneId: string, url: URL): void {
           truncated: bounded.truncated,
           text: bounded.text,
         },
+        // Additive: the observed part above is emitted identically either way, so
+        // the raw tail never disappears when interpretation is on.
+        ...interpretedParts(paneId),
       ],
     },
     { "Cache-Control": "no-store" },
@@ -1095,6 +1207,10 @@ async function handleApi(req: IncomingMessage, res: ServerResponse, url: URL): P
     runContract.maxRuns = 200;
     runOutputPadding = 0;
     failNextRunRead = null;
+    // Back to off, matching the config default: one journey enabling the
+    // experimental feature must not leak into the next.
+    interpretation.enabled = false;
+    interpretation.parsers = ["claude", "opencode"];
     // Back to the mode this server was started in, so one journey's mode switch
     // cannot leak into the next.
     mode = ENV_MODE;
@@ -1109,6 +1225,17 @@ async function handleApi(req: IncomingMessage, res: ServerResponse, url: URL): P
     if (body.mode !== undefined) mode = body.mode === "named" ? "named" : "quick";
     if (body.access_denied !== undefined) accessDenied = !!body.access_denied;
     send(res, 200, { mode, access_denied: accessDenied });
+    return true;
+  }
+  if (path === "/__interpretation" && method === "POST") {
+    // Test-only: emulate `[experimental] agent_output_parsing` (SPEC §12.2).
+    // Off by default; `{"enabled":true}` advertises the capability and appends the
+    // interpreted parts, `{"parsers":["claude"]}` narrows which agents are parsed.
+    const body = await readBody(req);
+    if (body.enabled !== undefined) interpretation.enabled = !!body.enabled;
+    if (Array.isArray(body.parsers)) interpretation.parsers = body.parsers.map(String);
+    broadcast();
+    send(res, 200, { enabled: interpretation.enabled, parsers: interpretation.parsers });
     return true;
   }
   if (path === "/__run_contract" && method === "POST") {

@@ -72,6 +72,7 @@ Mutations flow back through a **typed allowlist only**, never a generic RPC prox
 | `internal/tunnel` `internal/daemon` | `cloudflared` supervision/orphan reconciliation; lifecycle, control socket, runtime state, state lock. |
 | `internal/config` | Strict TOML (unknown keys are errors), path/permission verification. |
 | `internal/security` | ANSI output filtering and log/secret redaction. Both are live: `NewANSIFilter` via `integration/terminalfilter.go`, `SanitizeForLog` in `server/audit.go` and `tunnel/supervisor.go`. |
+| `internal/interpret` | **Experimental, off by default.** Heuristic parsing of Claude Code / OpenCode screen text into a chat-shaped reading (SPEC §12.2). Pure function over already-sanitized text; has its own fuzz oracle. |
 | `internal/webui` | Embeds the built PWA; selects generated vs. fallback tree. |
 | `web/` | The PWA. `web/mock/relay.ts` is a Vite plugin emitting the exact backend wire shapes for dev/preview/Playwright. |
 
@@ -99,6 +100,22 @@ Key invariants that span files:
   decision; `web/src/lib/run-adapter.ts` owns the read. Unknown part types and
   unknown statuses are ignored/`unknown`, never guessed at, and observed terminal
   output is never rendered as an agent message.
+- **Interpretation is a guess and must keep saying so.** `[experimental]
+  agent_output_parsing` (default `false`) makes the relay publish
+  `interpreted_transcript` / `interpreted_interaction` parts and advertise
+  `heuristic_interpretation`. It is **additive**: `observed_terminal_output` is still
+  emitted unchanged, every `structured_*` flag stays `false`, and with the flag off
+  the contract is byte-identical to §12.1. `internal/interpret` must return *no
+  match* rather than a plausible one, and the UI gates on the advertised capability
+  — never on a part being present. `web/src/lib/interpreted.ts` drops unknown turn
+  kinds / interaction types / diff ops instead of coercing them.
+- **`Option.SendKey` is synthesized, never scraped.** It is derived from the parsed
+  ordinal and validated against `^[1-9]$` in `internal/interpret` (twice) and again
+  in the browser. A pane can influence *which* options appear but never what bytes
+  would be sent. An option with no valid key makes the whole interaction
+  unanswerable, which is how OpenCode prompts are handled: its highlighted button is
+  carried by ANSI styling that the relay's `format: text` read discards, so it is
+  detected and displayed but deliberately not answerable.
 - Frontend state is `useSyncExternalStore` by design. Do not add a data library.
 
 ## Security invariants — do not weaken

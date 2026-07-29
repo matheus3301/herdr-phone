@@ -152,6 +152,10 @@ export function normalizeRunContract(runs: WireRunCapabilities | undefined | nul
     structuredTests: !!runs.structured_tests,
     structuredPlans: !!runs.structured_plans,
     observedTerminalOutput: !!runs.observed_terminal_output,
+    // Absent means off. A relay that does not say it interprets output does not
+    // interpret output — the same fail-closed rule as every other capability.
+    heuristicInterpretation: !!runs.heuristic_interpretation,
+    interpretationParsers: runs.interpretation_parsers ?? [],
     partTypes: runs.part_types ?? [],
     outputSources: runs.output_sources ?? [],
     maxOutputBytes: runs.max_output_bytes ?? 0,

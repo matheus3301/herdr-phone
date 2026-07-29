@@ -68,7 +68,10 @@ func tunnelConfig(cfg config.Config, mode string, port int, stateDir string) tun
 // tunnel-discovered *.trycloudflare.com URL. Loopback dev hosts and origins are
 // always allowed so a local operator can reach the origin directly (for example
 // over an SSH port-forward) without weakening the public-host allowlist.
-func serverConfig(mode, publicURL string, port int) server.Config {
+// Experimental interpretation is threaded through from the loaded config; when
+// the operator has not opted in, the zero Interpretation value keeps the run
+// contract byte-identical to a build without the feature (SPEC §12.2).
+func serverConfig(mode, publicURL string, port int, exp config.Experimental) server.Config {
 	hostPort := "127.0.0.1:" + strconv.Itoa(port)
 	localHost := "localhost:" + strconv.Itoa(port)
 	cfg := server.Config{
@@ -77,7 +80,8 @@ func serverConfig(mode, publicURL string, port int) server.Config {
 			"http://" + hostPort,
 			"http://" + localHost,
 		},
-		Quick: mode == config.ModeQuick,
+		Quick:          mode == config.ModeQuick,
+		Interpretation: interpretationConfig(exp),
 	}
 	if publicURL != "" {
 		host := hostOnly(publicURL)
@@ -85,6 +89,22 @@ func serverConfig(mode, publicURL string, port int) server.Config {
 		cfg.AllowedOrigins = append([]string{"https://" + host}, cfg.AllowedOrigins...)
 	}
 	return cfg
+}
+
+// interpretationConfig maps the experimental config section onto the server's
+// narrow view of it.
+//
+// When the flag is off the result is the zero value — no parser list, no bound —
+// so nothing downstream can accidentally enable the feature from a stale field.
+func interpretationConfig(exp config.Experimental) server.Interpretation {
+	if !exp.AgentOutputParsing {
+		return server.Interpretation{}
+	}
+	return server.Interpretation{
+		Enabled:  true,
+		Parsers:  append([]string(nil), exp.AgentOutputParsers...),
+		MaxTurns: exp.MaxInterpretedTurns,
+	}
 }
 
 // validateForServe applies the runtime-only rules that structural config

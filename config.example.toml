@@ -109,3 +109,32 @@ poll_cold = "12s"
 theme = "system"
 # Default terminal font size in CSS pixels (independently configurable in the UI).
 terminal_font_size = 13
+
+[experimental]
+# Heuristic interpretation of agent terminal output (SPEC 12.2). OFF by default.
+#
+# When on, the relay pattern-matches the on-screen output of the agent TUIs listed
+# below and publishes a chat-shaped reading of it: prose, tool calls, and the
+# question or approval the agent appears to be waiting on. The run view then
+# renders as a chat instead of a raw tail.
+#
+# Understand what you are turning on:
+#   - It is a GUESS about a third-party TUI's layout, not data any agent published.
+#     Herdr exposes no conversation API; this is screen scraping. It will misread
+#     things, and it will break when Claude Code or OpenCode changes its interface.
+#   - It is never authoritative. Every structured_* capability stays false, the
+#     readings are advertised as `heuristic_interpretation`, each part is flagged
+#     `experimental` on the wire, and the raw terminal output is still published
+#     alongside it — so the console remains the only faithful view.
+#   - Answering is never automatic. Tapping a detected option prefills the existing
+#     send-keys flow with the literal key and still requires an explicit confirm.
+#   - OpenCode prompts are detected but NOT answerable from the phone: which button
+#     is highlighted is carried by ANSI styling that the relay's text read discards,
+#     so there is no safe key to send. Use the console for those.
+agent_output_parsing = false
+# Agent kinds whose grammar may be parsed. Only "claude" and "opencode" are
+# implemented; an unrecognized name is a startup error rather than a silent no-op.
+agent_output_parsers = ["claude", "opencode"]
+# Maximum interpreted turns published per read (1-500). Oldest are dropped first
+# and the drop is reported, so a short transcript is never read as complete.
+max_interpreted_turns = 60

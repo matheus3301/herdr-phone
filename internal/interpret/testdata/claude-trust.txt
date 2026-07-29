@@ -1,0 +1,11 @@
+────────────────────────────────────────────────────────────────────────────────
+ Accessing workspace:
+
+ /private/tmp/hp-capture/sandbox
+
+ Quick safety check: Is this a project you created or one you trust?
+
+ ❯ 1. Yes, I trust this folder
+   2. No, exit
+
+ Enter to confirm · Esc to cancel

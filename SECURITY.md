@@ -195,11 +195,14 @@ semantic conversation data, so the relay never manufactures any.
 - **No content is logged.** A run read is audited as identity, pane id, outcome,
   and a byte count. Agent output, commands, and titles never enter a log or audit
   record.
-- **No inference from bytes.** The relay does not derive message roles, approvals,
-  tool calls, diffs, or test results from terminal output, and it does not parse
-  agent-specific transcript files. Output is served as one explicitly typed
-  `observed_terminal_output` part, and the capability document advertises every
-  semantic capability as unsupported so the UI fails closed instead of guessing.
+- **No inference from bytes, by default.** In the default configuration the relay
+  does not derive message roles, approvals, tool calls, diffs, or test results from
+  terminal output, and it never parses agent-specific transcript files. Output is
+  served as one explicitly typed `observed_terminal_output` part, and the capability
+  document advertises every semantic capability as unsupported so the UI fails
+  closed instead of guessing. An operator can opt into heuristic inference — see
+  *Experimental output interpretation* below — which is off unless deliberately
+  enabled and which never claims to be authoritative.
 - **Guarded by generation.** A run read requires the canonical `pane_id` and a
   nonzero `expected_generation`, checked before any Herdr call, so a client can
   never read through a recycled pane or a replaced agent. Run identity is bound to
@@ -217,6 +220,59 @@ semantic conversation data, so the relay never manufactures any.
 - **No new upstream surface.** The run API reads only `pane.read` / `agent.read`
   and the existing snapshot. There is still no generic Herdr RPC and no
   browser-supplied method name.
+
+### Experimental output interpretation
+
+`[experimental] agent_output_parsing` (default `false`) lets the relay pattern-match
+Claude Code and OpenCode screen output into a chat-shaped reading. It is screen
+scraping of a third-party TUI, so it is treated as untrusted-input parsing, not as a
+data source.
+
+- **Off unless chosen.** With the flag false no parser code executes, no capability
+  is advertised, and the run contract is byte-identical to the default one. There is
+  no way to enable it from the browser: it is a local config file the relay reads at
+  start, and `agent_output_parsers` is validated against the implemented set so a
+  typo fails startup rather than silently changing behaviour.
+- **Additive, never substitutive.** `observed_terminal_output` is still emitted
+  unchanged alongside the interpreted parts, and the UI keeps the raw tail and the
+  console reachable. Turning the flag off is a true revert.
+- **Never presented as authoritative.** Every `structured_*` capability stays
+  `false`; the feature advertises itself as `heuristic_interpretation`, each part
+  carries `"experimental": true`, and the UI shows a non-dismissible label stating
+  the turns are not the agent's own messages. A misparse should read as a wrong
+  guess, not as something the agent said.
+- **Parses only sanitized, bounded input.** The parser runs *after* the existing
+  sanitization and byte bound, so its input carries no ANSI, no CR, and no other
+  C0/C1 controls. Every string it emits is sanitized and length-bounded again on the
+  way out. Work is bounded on every axis (input lines, turns, options, detail lines,
+  diff lines, per-string bytes) and total output cannot exceed total input. A fuzz
+  oracle asserts termination, bounds, sanitization, and the send-key allowlist; a
+  timing test pins the bounded worst case at sub-millisecond.
+- **A misparse cannot choose what is sent.** `send_key` is *synthesized* from the
+  parsed option ordinal and validated against a single-digit allowlist — in the
+  relay at construction, again before serialization, and again in the browser before
+  the mutation. Option labels are untrusted display text and are never a source of
+  keystrokes. So a hostile pane can influence which options an operator is offered,
+  but not what bytes a tap would deliver.
+- **Answering is still explicit.** There is no new mutation and no new route.
+  Tapping an option opens a confirmation showing the literal key, and only an
+  explicit confirm delivers it through the existing `agent.send_keys` allowlist entry
+  under the mandatory `expected_generation` guard. "No blind one-tap approvals"
+  continues to hold in every configuration.
+- **Detection does not imply an action.** When the relay cannot determine a safe
+  key it reports `answerable: false` and the UI offers no send affordance at all.
+  This is the OpenCode case: its selected button is conveyed by ANSI styling that the
+  relay's `format: text` read discards, so the prompt is shown and the operator is
+  routed to the console rather than a keystroke count being guessed.
+- **Still nothing stored or logged.** Interpreted content is never cached,
+  persisted, or written to a log or audit record; run responses remain `no-store`
+  and the audit trail still records only identity, pane id, outcome, and byte count.
+- **Confined by agent kind.** Only panes whose run reports an `agent_kind` in the
+  configured list are parsed.
+
+The residual risk is accepted and bounded: the feature can display something the
+agent did not mean, which is why it is opt-in, labelled, additive, and unable to
+send anything without an explicit confirmation of the exact bytes.
 
 ### Replay and error fidelity
 
