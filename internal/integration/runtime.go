@@ -14,7 +14,6 @@ import (
 	"time"
 
 	"github.com/matheus3301/herdr-phone/internal/app"
-	"github.com/matheus3301/herdr-phone/internal/buildinfo"
 	"github.com/matheus3301/herdr-phone/internal/config"
 	"github.com/matheus3301/herdr-phone/internal/daemon"
 	"github.com/matheus3301/herdr-phone/internal/server"
@@ -362,7 +361,7 @@ func statusToApp(st daemon.StatusResult) app.Status {
 		PublicURL:        st.PublicURL,
 		LocalAddress:     st.LocalAddr,
 		Version:          st.Version,
-		Protocol:         buildinfo.HerdrProtocol,
+		Protocol:         st.HerdrProtocol,
 		PID:              st.PID,
 		Health:           string(st.Health),
 		ConnectedClients: st.ClientCount,

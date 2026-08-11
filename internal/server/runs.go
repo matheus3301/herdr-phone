@@ -15,9 +15,9 @@ import (
 
 // The structured run contract (SPEC §12.1).
 //
-// Herdr v0.7.5 (protocol 17) exposes no conversation surface: its 89 socket
-// methods contain no message, transcript, role, tool-call, interaction,
-// approval, diff, or test-result data. The only agent-observable signals are the
+// Herdr v0.7.5 and v0.8.0 (protocols 17 and 19) expose no conversation
+// surface: their socket methods contain no message, transcript, role,
+// tool-call, interaction, approval, diff, or test-result data. The only agent-observable signals are the
 // five lifecycle states, per-pane identity/context, and rendered terminal text
 // from `pane.read`/`agent.read`.
 //

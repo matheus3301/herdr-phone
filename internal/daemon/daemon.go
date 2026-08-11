@@ -201,16 +201,17 @@ func (d *Daemon) handleStatus(ctx context.Context) (StatusResult, error) {
 	}
 
 	return StatusResult{
-		Health:      health,
-		Mode:        d.opts.Runtime.Mode,
-		PublicURL:   d.opts.Runtime.PublicURL,
-		LocalAddr:   d.opts.Runtime.LocalAddr,
-		Version:     d.opts.Runtime.Version,
-		InstanceID:  d.opts.Runtime.InstanceID,
-		PID:         d.opts.Runtime.PID,
-		StartUnixMs: d.opts.Runtime.StartUnixMs,
-		ClientCount: clientCount,
-		Components:  components,
+		Health:        health,
+		Mode:          d.opts.Runtime.Mode,
+		PublicURL:     d.opts.Runtime.PublicURL,
+		LocalAddr:     d.opts.Runtime.LocalAddr,
+		Version:       d.opts.Runtime.Version,
+		HerdrProtocol: d.opts.Runtime.HerdrProtocol,
+		InstanceID:    d.opts.Runtime.InstanceID,
+		PID:           d.opts.Runtime.PID,
+		StartUnixMs:   d.opts.Runtime.StartUnixMs,
+		ClientCount:   clientCount,
+		Components:    components,
 	}, nil
 }
 

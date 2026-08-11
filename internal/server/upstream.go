@@ -17,7 +17,8 @@ type UpstreamCoder interface {
 }
 
 // Upstream failure codes this relay recognizes. The first group is Herdr's
-// server-side error set (protocol 17); the second is the Herdr adapter's own
+// server-side error set (identical in protocols 17 and 19); the second is the
+// Herdr adapter's own
 // transport codes. Anything outside both sets is treated as an unclassified
 // upstream fault.
 const (

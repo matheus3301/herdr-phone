@@ -21,7 +21,7 @@ func (s AgentStatus) Active() bool {
 // agent bootstrap state. Unknown fields are tolerated and ignored.
 //
 // There is deliberately no top-level worktree array: `SessionSnapshot` in
-// `herdr api schema --json` (protocol 17, schema 1) declares none, so a field
+// `herdr api schema --json` (protocols 17 and 19, schema 1) declares none, so a field
 // for one would decode as empty forever and invite consumers to build on it.
 // Worktree context comes from Workspace.Worktree; the full worktree inventory
 // requires a separate `worktree.list` call.

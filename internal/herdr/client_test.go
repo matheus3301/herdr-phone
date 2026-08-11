@@ -48,6 +48,36 @@ func TestHandshakeProtocolMismatch(t *testing.T) {
 	}
 }
 
+func TestHandshakeAcceptsEveryVerifiedProtocol(t *testing.T) {
+	t.Parallel()
+	for _, proto := range Protocols {
+		s := newServer(func(req map[string]any) []byte {
+			return reply(req, map[string]any{"type": "pong", "version": "0.8.0", "protocol": proto})
+		})
+		c := newTestClient(t, s)
+		p, err := c.Handshake(context.Background())
+		if err != nil {
+			t.Fatalf("protocol %d must be accepted, got %v", proto, err)
+		}
+		if p.Protocol != proto {
+			t.Fatalf("unexpected pong for protocol %d: %+v", proto, p)
+		}
+	}
+}
+
+// Protocol 18 shipped only in preview builds and was never verified against
+// these models, so it must stay rejected even though 17 and 19 both pass.
+func TestHandshakeRejectsUnverifiedProtocolBetweenSupported(t *testing.T) {
+	t.Parallel()
+	s := newServer(func(req map[string]any) []byte {
+		return reply(req, map[string]any{"type": "pong", "version": "0.8.0", "protocol": 18})
+	})
+	c := newTestClient(t, s)
+	if _, err := c.Handshake(context.Background()); !IsCode(err, CodeIncompatible) {
+		t.Fatalf("unverified protocol must reject, got %v", err)
+	}
+}
+
 func TestResultTypeValidation(t *testing.T) {
 	t.Parallel()
 	s := newServer(func(req map[string]any) []byte {
