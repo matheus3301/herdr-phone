@@ -18,11 +18,6 @@ const DisplayName = "Herdr Phone"
 // manifest's min_herdr_version and the floor the daemon enforces on ping.
 const MinHerdrVersion = "0.7.5"
 
-// HerdrProtocol is the Herdr wire protocol this plugin is built against. The
-// daemon verifies the live server reports this protocol on ping before trusting
-// any other response (unknown response fields are tolerated).
-const HerdrProtocol = 17
-
 // UserAgent is the HTTP User-Agent used for outbound requests the plugin itself
 // makes (for example Cloudflare Access JWKS fetches). It is versioned so traffic
 // is attributable to this plugin.

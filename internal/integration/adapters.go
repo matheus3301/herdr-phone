@@ -189,10 +189,11 @@ func (m *mutatorAdapter) Mutate(ctx context.Context, op string, params json.RawM
 // and never exposes structural control (stop/rotate live only on the control
 // socket).
 type daemonStatusAdapter struct {
-	mode    string
-	ready   func() bool
-	herdr   func() server.ComponentHealth
-	stateFn func() server.ComponentHealth
+	mode     string
+	protocol int
+	ready    func() bool
+	herdr    func() server.ComponentHealth
+	stateFn  func() server.ComponentHealth
 }
 
 var _ server.DaemonController = (*daemonStatusAdapter)(nil)
@@ -200,7 +201,7 @@ var _ server.DaemonController = (*daemonStatusAdapter)(nil)
 func (d *daemonStatusAdapter) Status() server.DaemonStatus {
 	return server.DaemonStatus{
 		Version:  buildinfo.Version,
-		Protocol: buildinfo.HerdrProtocol,
+		Protocol: d.protocol,
 		Mode:     d.mode,
 		Ready:    d.ready(),
 		Herdr:    d.herdr(),

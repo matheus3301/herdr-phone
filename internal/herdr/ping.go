@@ -30,16 +30,16 @@ func (c *Client) Ping(ctx context.Context) (*Pong, error) {
 }
 
 // Handshake pings and verifies protocol compatibility. It tolerates unknown
-// response fields (they are ignored) but rejects a mismatched protocol so an
+// response fields (they are ignored) but rejects an unsupported protocol so an
 // incompatible server surfaces clearly rather than corrupting later decodes.
 func (c *Client) Handshake(ctx context.Context) (*Pong, error) {
 	p, err := c.Ping(ctx)
 	if err != nil {
 		return nil, err
 	}
-	if p.Protocol != Protocol {
+	if !protocolSupported(p.Protocol) {
 		return nil, newError(CodeIncompatible,
-			"herdr protocol "+itoa(p.Protocol)+" is not supported; require "+itoa(Protocol))
+			"herdr protocol "+itoa(p.Protocol)+" is not supported; require one of "+protocolList())
 	}
 	// Validate the reported version too (SPEC §10), but only reject builds
 	// strictly older than the minimum. Newer patch/minor/major releases are
@@ -50,6 +50,26 @@ func (c *Client) Handshake(ctx context.Context) (*Pong, error) {
 			"herdr version "+sanitizeMessage(p.Version)+" is older than the required "+MinHerdrVersion)
 	}
 	return p, nil
+}
+
+func protocolSupported(v int) bool {
+	for _, p := range Protocols {
+		if p == v {
+			return true
+		}
+	}
+	return false
+}
+
+func protocolList() string {
+	var b strings.Builder
+	for i, p := range Protocols {
+		if i > 0 {
+			b.WriteString(", ")
+		}
+		b.WriteString(itoa(p))
+	}
+	return b.String()
 }
 
 // versionOlderThan reports whether semantic version v is strictly older than

@@ -33,14 +33,18 @@ const (
 // non-secret operational metadata; pairing secrets, tokens, JWTs, and cookies
 // must never be written here.
 type Runtime struct {
-	PID         int    `json:"pid"`
-	InstanceID  string `json:"instance_id"`
-	Mode        string `json:"mode"`
-	LocalAddr   string `json:"local_addr"`
-	PublicURL   string `json:"public_url"`
-	Version     string `json:"version"`
-	StartUnixMs int64  `json:"start_unix_ms"`
-	Health      Health `json:"health"`
+	PID        int    `json:"pid"`
+	InstanceID string `json:"instance_id"`
+	Mode       string `json:"mode"`
+	LocalAddr  string `json:"local_addr"`
+	PublicURL  string `json:"public_url"`
+	Version    string `json:"version"`
+	// HerdrProtocol is the wire protocol the live Herdr server reported during
+	// the startup handshake, not a compile-time constant: the daemon supports
+	// more than one protocol, so status must say which one is actually in use.
+	HerdrProtocol int    `json:"herdr_protocol"`
+	StartUnixMs   int64  `json:"start_unix_ms"`
+	Health        Health `json:"health"`
 }
 
 // StartTime returns the daemon start time.

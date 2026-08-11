@@ -56,16 +56,17 @@ type controlResponse struct {
 // StatusResult is the non-secret status snapshot returned over the control
 // socket. It mirrors runtime metadata plus per-component readiness.
 type StatusResult struct {
-	Health      Health            `json:"health"`
-	Mode        string            `json:"mode"`
-	PublicURL   string            `json:"public_url"`
-	LocalAddr   string            `json:"local_addr"`
-	Version     string            `json:"version"`
-	InstanceID  string            `json:"instance_id"`
-	PID         int               `json:"pid"`
-	StartUnixMs int64             `json:"start_unix_ms"`
-	ClientCount int               `json:"client_count"`
-	Components  []ComponentStatus `json:"components"`
+	Health        Health            `json:"health"`
+	Mode          string            `json:"mode"`
+	PublicURL     string            `json:"public_url"`
+	LocalAddr     string            `json:"local_addr"`
+	Version       string            `json:"version"`
+	HerdrProtocol int               `json:"herdr_protocol"`
+	InstanceID    string            `json:"instance_id"`
+	PID           int               `json:"pid"`
+	StartUnixMs   int64             `json:"start_unix_ms"`
+	ClientCount   int               `json:"client_count"`
+	Components    []ComponentStatus `json:"components"`
 }
 
 // ComponentStatus reports the readiness of one supervised subsystem (HTTP,

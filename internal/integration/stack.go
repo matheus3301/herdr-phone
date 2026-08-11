@@ -86,7 +86,7 @@ func buildStack(serveCtx context.Context, cancel context.CancelFunc, rt *Runtime
 	}
 	bin := resolveHerdrBin(cfg, rt.env)
 
-	// Herdr client + startup handshake (protocol 17). WithBin lets the client run
+	// Herdr client + startup handshake (verified protocols only). WithBin lets the client run
 	// the bare `herdr agent` CLI to discover startable agent kinds (the socket
 	// protocol does not expose them).
 	client := herdr.NewClient(herdr.NewUnixDialer(socket), herdr.WithBin(bin))
@@ -243,10 +243,11 @@ func buildStack(serveCtx context.Context, cancel context.CancelFunc, rt *Runtime
 	var dHolder atomic.Pointer[daemon.Daemon]
 	stateAd := newStateAdapter(engine, client, capsBase, kinds, time.Now)
 	daemonStat := &daemonStatusAdapter{
-		mode:    mode,
-		ready:   func() bool { d := dHolder.Load(); return d != nil && d.Health() == daemon.HealthReady },
-		herdr:   func() server.ComponentHealth { return herdrHealth(client) },
-		stateFn: func() server.ComponentHealth { return stateHealth(engine) },
+		mode:     mode,
+		protocol: pong.Protocol,
+		ready:    func() bool { d := dHolder.Load(); return d != nil && d.Health() == daemon.HealthReady },
+		herdr:    func() server.ComponentHealth { return herdrHealth(client) },
+		stateFn:  func() server.ComponentHealth { return stateHealth(engine) },
 	}
 
 	srv, err := server.New(serverConfig(mode, publicURL, cfg.Server.Port, cfg.Experimental), server.Deps{
@@ -273,14 +274,15 @@ func buildStack(serveCtx context.Context, cancel context.CancelFunc, rt *Runtime
 	d := daemon.New(daemon.Options{
 		StateDir: stateDir,
 		Runtime: daemon.Runtime{
-			PID:         os.Getpid(),
-			InstanceID:  instanceID,
-			Mode:        mode,
-			LocalAddr:   listener.Addr().String(),
-			PublicURL:   publicURL,
-			Version:     buildinfo.Version,
-			StartUnixMs: time.Now().UnixMilli(),
-			Health:      daemon.HealthStarting,
+			PID:           os.Getpid(),
+			InstanceID:    instanceID,
+			Mode:          mode,
+			LocalAddr:     listener.Addr().String(),
+			PublicURL:     publicURL,
+			Version:       buildinfo.Version,
+			HerdrProtocol: pong.Protocol,
+			StartUnixMs:   time.Now().UnixMilli(),
+			Health:        daemon.HealthStarting,
 		},
 		Pairing:     authAd,
 		ClientCount: srv.Clients,
